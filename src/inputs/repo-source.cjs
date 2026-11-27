@@ -194,11 +194,26 @@
   // Strings read from source are capped (a constant doubled in a chain must not blow up): longer is partial.
   const MAX_STR = 64 * 1024;
   const capStr = (r) => { if (r && typeof r.value === 'string' && r.value.length > MAX_STR) { lose(r.value.slice(MAX_STR)); r.value = r.value.slice(0, MAX_STR) + '…'; r.exact = false; r.partial = true; } return r; };
+  // ${Object.keys(C).join(", ")}, ${Object.values(C).join(sep)} and ${C.join(sep)} in a template, C a constant read whole
+  // (an object literal for keys; strings or fixed numbers for values and arrays): the joined text (R-RD-43). Else null.
+  function tplJoin(e, ctx) {
+    const m = /^\s*(?:Object\s*\.\s*(keys|values)\s*\(\s*([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*)\s*\)|([A-Za-z_$][\w$]*(?:\s*\.\s*[A-Za-z_$][\w$]*)*))\s*\.\s*join\s*\(\s*(?:(['"])((?:(?!\4)[^\\\n]){0,20})\4)?\s*\)\s*$/.exec(e);
+    if (!m || !ctx || !ctx.consts) return null;
+    const r = chainValue(ctx, (m[2] || m[3]).split(/\s*\.\s*/)); const c = r && r.c;
+    if (!r || !c || c.exact === false || c.partial || c.holes) return null;
+    const v = r.value; const sep = m[4] ? m[5] : ',';
+    let items;
+    if (m[1] === 'keys') { if (!v || typeof v !== 'object' || Array.isArray(v)) return null; items = Object.keys(v); }
+    else if (m[1] === 'values') { if (!v || typeof v !== 'object' || Array.isArray(v)) return null; items = Object.values(v); }
+    else { if (!Array.isArray(v)) return null; items = v; }
+    if (!items.every((x) => typeof x === 'string' || (typeof x === 'number' && Number.isFinite(x)))) return null;
+    return { value: items.join(sep), c };
+  }
   // A template literal: its ${CONST} parts filled in from constants; others shown as "…" and the value marked partial.
   function tplValue(tok, ctx) {
     let out = tok.parts[0]; let exact = true;
     tok.exprs.forEach((e, k) => {
-      const r = /^[A-Za-z_$][\w$]*(\s*\??\.\s*[A-Za-z_$][\w$]*)*$/.test(e) ? chainValue(ctx, e.split(/\s*\??\.\s*/)) : null;
+      const r = /^[A-Za-z_$][\w$]*(\s*\??\.\s*[A-Za-z_$][\w$]*)*$/.test(e) ? chainValue(ctx, e.split(/\s*\??\.\s*/)) : tplJoin(e, ctx);
       if (r && (typeof r.value === 'string' || (typeof r.value === 'number' && fixedNum(r.c)))) out += String(r.value); else { out += '…'; exact = false; }
       out += tok.parts[k + 1];
       if (out.length > MAX_STR) { lose(out.slice(MAX_STR)); out = out.slice(0, MAX_STR); exact = false; }
@@ -2440,7 +2455,7 @@
   // Names come from literals, constants, Enum members (Tools.STATUS.value) and f-strings of constants.
   function extractPy(src, opts) {
     opts = opts || {};
-    const flavour = pyFlavour(src, opts); const fmcp = flavour === 'fastmcp';
+    const flavour = opts.forceFlavour || pyFlavour(src, opts); const fmcp = flavour === 'fastmcp';
     const clean = pyStripComments(src);
     const L = pyLogicalLines(clean);
     const fc = pyFileConsts(L, opts.pyConsts || null);
@@ -2468,7 +2483,10 @@
     // known (not a literal list or tuple of names, a list changed after it is built, a name that is not a def of this
     // file, a registration under an if or after a continue/break/return/raise), or null when v is not a loop variable.
     const pyLoopOver = (k, v) => {
-      const FOR = /^(?:async\s+)?for\s+([A-Za-z_]\w*)\s+in\s+([\s\S]+?)\s*:\s*([\s\S]*)$/;
+      // the loop target may be a tuple (for fn, title in TOOLS): its items cannot be known, so the registration is unresolved (R-RD-42)
+      const FOR = /^(?:async\s+)?for\s+\(?\s*([A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)\s*,?\s*\)?\s+in\s+([\s\S]+?)\s*:\s*([\s\S]*)$/;
+      const binds = (m) => m && m[1].split(',').map((x) => x.trim()).includes(v);
+      const single = (m) => !/,/.test(m[1]);
       const fnScope = (q) => { // the def around logical line q: [first line, end) or [0, L.length) at module level
         let ind = L[q].indent; for (let r = q - 1; r >= 0; r--) { if (L[r].indent >= ind) continue; if (/^(?:async\s+)?(def|class)\s/.test(L[r].text.trim())) { let e = r + 1; while (e < L.length && L[e].indent > L[r].indent) e++; return [r + 1, e]; } ind = L[r].indent; }
         return [0, L.length];
@@ -2495,12 +2513,13 @@
         return items;
       };
       const here = FOR.exec(L[k].text.trim());
-      if (here && here[1] === v && here[3]) return { items: listOf(here[2], k) }; // for v in X: mcp.add_tool(v)
+      if (binds(here) && here[3]) return { items: single(here) ? listOf(here[2], k) : null }; // for v in X: mcp.add_tool(v)
       let ind = L[k].indent;
       for (let q = k - 1; q >= 0; q--) {
         const x = L[q]; if (x.indent >= ind) continue;
         const tx = x.text.trim(); const m = FOR.exec(tx);
-        if (m && m[1] === v && !m[3]) {
+        if (binds(m) && !m[3]) {
+          if (!single(m)) return { items: null };
           if (L[k].indent !== L[q + 1].indent) return { items: null }; // under an if or another block of the loop
           for (let r = q + 1; r < k; r++) if (/^(continue|break|return|raise)\b/.test(L[r].text.trim())) return { items: null };
           return { items: listOf(m[2], q) };
@@ -2600,12 +2619,25 @@
       tool._unreadable = un;
       return { tool, exactTypes: exact, fname };
     };
+    // the docstring of the def at logical line k exactly as written (fn.__doc__), null when it has none, undefined when
+    // it cannot be read
+    const rawDocOf = (k) => {
+      const head = L[k].text; const nx = L[k + 1];
+      const m = /\)\s*(?:->[\s\S]+?)?:\s*(.*)$/.exec(head); if (!m) return undefined;
+      const first = m[1].trim() || (nx && nx.indent > L[k].indent ? nx.text : '');
+      if (!/^(?:[rRuU]{0,1})("\"\"|'''|"|')/.test(first)) return null;
+      const v = exprVal(first); return v && typeof v.value === 'string' && v.exact !== false ? v.value : undefined;
+    };
     // what a decorator or call gave: name=, description=, title=, annotations=, structured_output=, tags=
     const givenOf = (kw) => {
       const g = {};
       if (kw.name !== undefined) { const n = nameOf(kw.name); g.name = n; if (!n) g.nameUnknown = true; }
       if (kw.title !== undefined) { const v = exprVal(kw.title); if (v && typeof v.value === 'string') g.title = v.value; }
-      if (kw.description !== undefined) { const v = exprVal(kw.description); if (v && typeof v.value === 'string') { g.description = v.value; if (v.partial) g.descriptionPartial = true; } else { g.description = null; g.descriptionLiterals = pyLiterals(kw.description); lose(g.descriptionLiterals); } }
+      // description=fn.__doc__ (or ""): that def's docstring as Python keeps it, not cleaned (R-RD-43)
+      const dm = kw.description !== undefined ? /^\s*([A-Za-z_]\w*)\.__doc__\s*(?:or\s+(?:""|''))?\s*$/.exec(kw.description) : null;
+      const raw = dm && defs.has(dm[1]) ? rawDocOf(defs.get(dm[1])) : undefined;
+      if (typeof raw === 'string' || (raw === null && /\bor\b/.test(kw.description))) g.description = raw || '';
+      else if (kw.description !== undefined) { const v = exprVal(kw.description); if (v && typeof v.value === 'string') { g.description = v.value; if (v.partial) g.descriptionPartial = true; } else { g.description = null; g.descriptionLiterals = pyLiterals(kw.description); lose(g.descriptionLiterals); } }
       if (kw.annotations !== undefined) { const a = pyAnnotationsValue(kw.annotations); g.annotations = a && a.value; if (a && a.partial) g.annotationsPartial = true; }
       else if (['read_only_hint', 'destructive_hint', 'idempotent_hint', 'open_world_hint'].some((k) => kw[k] !== undefined)) g.annotationsUnknown = true;
       if (kw.structured_output !== undefined && /^False$/.test(kw.structured_output.trim())) g.structured = false;
@@ -2752,7 +2784,9 @@
       add(tool, line, { fn: tpl.name, exactTypes: !un.length && !!(sv && sv.exact) });
     };
     let topDef = null; // the top-level def of each logical line (or -1), from one pass
-    for (let k = 0; k < L.length; k++) {
+    const cross = []; // registrations of a function this file imports (R-RD-42), read in the file that defines it
+    const imported = pyImports(L);
+    for (let k = opts.extraRegs ? L.length : 0; k < L.length; k++) {
       const l = L[k];
       const lineLost = []; LOST.cur = lineLost; const toolsBefore = tools.length; const unresBefore = unresolved.length;
       try { // one registration that cannot be read never drops the others: it is counted instead
@@ -2840,13 +2874,20 @@
         }
         // a function made a tool: x.tool(fn, name=...), x.add_tool(fn, ...), Tool.from_function(fn, ...), ToolDefinition(fn=...)
         let fnArg = a.kw.fn !== undefined ? a.kw.fn : a.pos[0];
+        // the decorator called by hand: x.tool(name=..., annotations=...)(fn) is x.tool(fn, name=..., ...) (R-RD-42)
+        let curried = false;
+        if (fnArg === undefined && dotted && owner && fn === 'tool' && isP(t[a.close + 1], '(')) { const c2 = pyCallArgs(t, a.close + 1); if (c2.pos.length === 1 && !Object.keys(c2.kw).length) { fnArg = c2.pos[0]; curried = true; } }
+        // module.fn: a function of a module this file imports (R-RD-42)
+        const modRef = fnArg !== undefined && t[fnArg] && t[fnArg].type === 'id' && t[fnArg].value !== 'self' && isP(t[fnArg + 1], '.') && t[fnArg + 2] && t[fnArg + 2].type === 'id' && (isP(t[fnArg + 3], ',') || isP(t[fnArg + 3], ')')) ? { mod: t[fnArg].value, name: t[fnArg + 2].value } : null;
         // fn, self.fn, or one wrapper around it: call_with_client(fn)
         if (fnArg !== undefined && t[fnArg] && t[fnArg].type === 'id' && isP(t[fnArg + 1], '(')) { const w = pyCallArgs(t, fnArg + 1); fnArg = w.pos.length === 1 && !Object.keys(w.kw).length && t[w.pos[0]] && t[w.pos[0]].type === 'id' && (isP(t[w.pos[0] + 1], ')')) ? w.pos[0] : undefined; }
         const plain = (k) => isP(t[k + 1], ',') || isP(t[k + 1], ')');
         const fnRef = fnArg !== undefined && t[fnArg] && t[fnArg].type === 'id' ? (t[fnArg].value === 'self' && isP(t[fnArg + 1], '.') && t[fnArg + 2] && plain(fnArg + 2) ? t[fnArg + 2].value : plain(fnArg) ? t[fnArg].value : null) : null;
-        const isMake = (dotted && owner && (fn === 'tool' || fn === 'add_tool') && a.pos.length >= 1) || (fn === 'from_function' && owner && /Tool$/.test(owner)) || (/ToolDefinition$/.test(fn) && a.kw.fn !== undefined);
-        if (!isMake || !fnRef) continue;
+        const isMake = (dotted && owner && (fn === 'tool' || fn === 'add_tool') && (a.pos.length >= 1 || curried)) || (fn === 'from_function' && owner && /Tool$/.test(owner)) || (/ToolDefinition$/.test(fn) && a.kw.fn !== undefined);
+        if (!isMake || (!fnRef && !modRef)) continue;
         const given = givenOf(kwAll);
+        if (modRef && !given.nameUnknown) { cross.push({ mod: modRef.mod, name: modRef.name, given, line: l.line, server: dotted && fn !== 'from_function' ? owner : null }); i = curried ? pyMatch(t, a.close + 1) : a.close; continue; }
+        if (!fnRef) continue;
         // the registration inside a bare registrar (def create_tool(name, …): mcp.tool(fn, name=name)) is named at each
         // use of the registrar, where it is read: not an unresolved registration of its own (R-RD-20)
         if (given.nameUnknown && registrars.bare && registrars.bare.size) {
@@ -2861,7 +2902,9 @@
           // for tool in tools: mcp.add_tool(tool), over a list of this file's functions, is read once per function
           // (R-RD-34); a loop over anything else is counted as unresolved, never guessed
           const loop = pyLoopOver(k, fnRef);
-          if (loop === null) continue; // a parameter or a function from elsewhere, named nowhere here
+          // a function this file imports: read where it is defined (R-RD-42)
+          if (loop === null && imported.has(fnRef)) { cross.push({ local: fnRef, given, line: l.line, server: dotted && fn !== 'from_function' ? owner : null }); i = curried ? pyMatch(t, a.close + 1) : a.close; continue; }
+          if (loop === null) continue; // a parameter, named nowhere here
           if (!loop.items) { unresolved.push(unresolvedText(l.line, given)); i = a.close; continue; }
           loop.items.forEach((nm) => { const r = fromDef(defs.get(nm), Object.assign({}, given)); if (r) add(r.tool, l.line, { exactTypes: r.exactTypes, server: dotted && fn !== 'from_function' ? owner : null, fn: nm, unrolled: true }); });
           i = a.close; continue;
@@ -2885,9 +2928,65 @@
         if (lineLost.length) { for (let x = toolsBefore; x < tools.length; x++) tools[x].tool._lost = lineLost; for (let x = unresBefore; x < unresolved.length; x++) unresolved[x].lost = lineLost; }
       }
     }
-    tools.unresolved = unresolved; tools.overBudget = overBudget;
+    // registrations made in another file of a function defined here (analyseRepo, R-RD-42)
+    (opts.extraRegs || []).forEach((x) => {
+      const dk = defs.get(x.name);
+      if (dk === undefined || !/^(?:async\s+)?def\s/.test(L[dk].text)) { unresolved.push(unresolvedText(x.line, x.given)); return; }
+      const r = fromDef(dk, Object.assign({}, x.given));
+      if (r) add(r.tool, x.line, { exactTypes: r.exactTypes, server: x.server, fn: x.name, defLine: L[dk].line });
+    });
+    tools.unresolved = unresolved; tools.overBudget = overBudget; tools.cross = cross;
     return tools;
   }
+  // The .py file of a module spec as `from <spec> import` writes it, seen from file `from`: "." and ".x.y" relative to
+  // its folder, "a.b" absolute (the file a/b.py or a/b/__init__.py anywhere in the listing, when only one matches).
+  function pyModuleFile(from, spec, pyPaths) {
+    const m = /^(\.*)([\w.]*)$/.exec(String(spec)); if (!m) return null;
+    const has = new Set(pyPaths);
+    const rest = m[2] ? m[2].replace(/\./g, '/') : '';
+    if (m[1]) {
+      let dir = from.includes('/') ? from.slice(0, from.lastIndexOf('/')) : '';
+      for (let i = 1; i < m[1].length; i++) dir = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : '';
+      const base = dir ? dir + (rest ? '/' + rest : '') : rest;
+      for (const c of [base + '.py', (base ? base + '/' : '') + '__init__.py']) if (base !== '' || c === '__init__.py') if (has.has(c)) return c;
+      return null;
+    }
+    if (!rest) return null;
+    const hits = pyPaths.filter((x) => x === rest + '.py' || x.endsWith('/' + rest + '.py') || x === rest + '/__init__.py' || x.endsWith('/' + rest + '/__init__.py'));
+    return hits.length === 1 ? hits[0] : null;
+  }
+  // A package's __init__.py that only imports `name` from one of its modules (from .x import name): that module and name.
+  function pyReexport(path, name, text, pyPaths) {
+    const t = text.get(path); if (typeof t !== 'string') return null;
+    if (new RegExp('^(?:async\\s+)?def\\s+' + name + '\\s*\\(', 'm').test(t)) return null;
+    let L; try { L = pyLogicalLines(pyStripComments(t)); } catch (e) { return null; }
+    const im = pyImports(L).get(name);
+    if (!im || im.module) return null;
+    const f = pyModuleFile(path, im.from, pyPaths);
+    return f && f !== path ? { path: f, name: im.name } : null;
+  }
+  // The names a Python file imports: local name -> { from: module (dots kept, relative or absolute), name: the imported
+  // name, or null for `import x` / `from . import x` of a module }.
+  function pyImports(L) {
+    const out = new Map();
+    L.forEach((l) => {
+      if (l.indent !== 0) return;
+      const tx = l.text;
+      // split by hand, in linear time: a long run of spaces in an import line must not backtrack (R-RD-21)
+      if (/^from\s/.test(tx)) {
+        const k = tx.search(/\simport\s/); if (k < 0) return;
+        const mod = tx.slice(4, k).trim(); if (!/^\.*[\w.]*$/.test(mod) || !mod) return;
+        const names = tx.slice(k + 1).replace(/^import\s+/, '').replace(/[()]/g, ' ');
+        names.split(',').forEach((x) => { const parts = x.trim().split(/\s+/); if (parts.length === 1 && /^[A-Za-z_]\w*$/.test(parts[0])) out.set(parts[0], { from: mod, name: parts[0] }); else if (parts.length === 3 && parts[1] === 'as' && /^[A-Za-z_]\w*$/.test(parts[0]) && /^[A-Za-z_]\w*$/.test(parts[2])) out.set(parts[2], { from: mod, name: parts[0] }); });
+        return;
+      }
+      if (/^import\s/.test(tx)) {
+        tx.slice(7).split(',').forEach((x) => { const parts = x.trim().split(/\s+/); if (!/^[\w.]+$/.test(parts[0] || '')) return; if (parts.length === 3 && parts[1] === 'as') out.set(parts[2], { from: parts[0], name: null, module: true }); else if (parts.length === 1) out.set(parts[0].split('.')[0], { from: parts[0].split('.')[0], name: null, module: true }); });
+      }
+    });
+    return out;
+  }
+
   // The string literals of a Python expression (the readable parts of one that cannot be read as a whole), or null.
   function pyLiterals(text) {
     let t; try { t = pyTokenize(String(text)); } catch (e) { return null; }
@@ -3286,18 +3385,25 @@
     if (d === null) return importsMajor ? imp : none;
     // the runtime requirements of the declaring folder; a dependency group or extra that would change the answer: unknown
     let uncond = PY_MCP_MAJORS.slice(); const variants = []; const groups = []; let declared = false; let unreadable = false; const from = []; const said = [];
+    const perFile = []; // [file, the majors its runtime requirements allow, what it says]
     for (const [p, text] of sc.decl.get(d) || []) {
+      let own = PY_MCP_MAJORS.slice(); let ownSaid = null;
       const take = (dist, majors, map) => pyReqSpecs(p, text, dist).forEach((r) => {
         const a0 = specMajors(r.spec, majors); if (!a0) { unreadable = true; return; }
         const a = map ? Array.from(new Set(a0.map(map))) : a0;
         const txt = dist + (r.spec ? r.spec : ' (any version)') + (r.marker ? ' ; ' + r.marker : '') + ' in ' + p + (r.group ? ' [' + r.group + ']' : '');
         if (r.group) { groups.push({ a, txt }); return; }
         declared = true;
-        if (r.marker) variants.push({ a, marker: r.marker }); else uncond = uncond.filter((x) => a.includes(x));
+        if (r.marker) variants.push({ a, marker: r.marker }); else { uncond = uncond.filter((x) => a.includes(x)); own = own.filter((x) => a.includes(x)); ownSaid = ownSaid || txt; }
         from.push(dist === 'mcp' ? 'mcp' : 'fastmcp'); said.push(txt);
       });
       take('mcp', PY_MCP_MAJORS, null); take('fastmcp', PY_FASTMCP_MAJORS, pyMcpOfFastmcp); take('fastmcp-slim', PY_FASTMCP_MAJORS, pyMcpOfFastmcp);
+      if (ownSaid) perFile.push([p, own, ownSaid]);
     }
+    // two runtime manifests of one folder (pyproject.toml and requirements-legacy.txt) that would install different
+    // majors on their own: which one installs is not known, so neither decides (R-RD-43)
+    const alone = perFile.map(([, a]) => { const w = narrowed(a); return w.length ? Math.max(...w) : null; });
+    if (perFile.length > 1 && new Set(alone).size > 1) return { major: null, why: 'manifests of one folder would install different Python SDK majors (' + perFile.slice(0, 3).map((x) => x[2]).join('; ') + ')' };
     if (unreadable) return { major: null, why: 'a requirement on mcp or fastmcp could not be read' };
     const base = narrowed(uncond);
     // a lock in the declaring folder or above it (a workspace root) pins the version, when the folder's own runtime
@@ -4206,6 +4312,7 @@
       if (a.major) { o.pyMajor = a.major; o.pyMajorFrom = a.from; if (a.inferred) o.pyMajorWhy = a.why; } else o.pyMajorUnknown = a.why;
       return o;
     };
+    const crossAll = []; // [registering file, its text, [registration of an imported function]] (R-RD-42)
     const hostPlugins = [];
     srcList.forEach(([p, t]) => {
       let ts = [];
@@ -4225,6 +4332,7 @@
       }
       (ts.unresolved || []).forEach((u) => unresolved.push(Object.assign({ path: p }, u)));
       (ts.overBudget || []).forEach((u) => overBudget.push(Object.assign({ path: p }, u)));
+      if (ts.cross && ts.cross.length) crossAll.push([p, t, ts.cross]);
       ts.forEach((x) => {
         // a name with a part the reader could not work out (shown as "…", never a character of a tool name) is not a
         // name: the registration counts as unresolved (R-RD-41)
@@ -4237,6 +4345,46 @@
         if (!byName.has(x.tool.name) || (x.listDup && firstPath.get(x.tool.name) === p)) { if (!byName.has(x.tool.name)) firstPath.set(x.tool.name, p); byName.add(x.tool.name); found.push(Object.assign({ path: p }, x)); } else dupes.push({ path: p, name: x.tool.name });
       });
     });
+    // Python: a registration in one file of a function another module of the repository defines, imported by name
+    // (from .tools import get_uma; mcp.add_tool(get_uma)) or through its module (filesystem.read_file): read in the
+    // defining file, as that function, with the registering file's SDK flavour and arguments (R-RD-42). A function the
+    // reader cannot find there is an unresolved registration, never a guessed tool.
+    if (crossAll.length) {
+      const pyPaths = paths.filter((x) => /\.py$/.test(x));
+      const groups = new Map();
+      crossAll.forEach(([p, t, regs]) => {
+        let imps; try { imps = pyImports(pyLogicalLines(pyStripComments(t))); } catch (e) { imps = new Map(); }
+        const flavour = pyFlavour(t, { sdk }); const psdk = pySdkOf(p, t);
+        regs.forEach((x) => {
+          let target = null; let name = null;
+          if (x.local !== undefined) {
+            const im = imps.get(x.local);
+            if (im && !im.module) { target = pyModuleFile(p, im.from, pyPaths); name = im.name; if (target) { const fw = pyReexport(target, name, text, pyPaths); if (fw) { target = fw.path; name = fw.name; } } }
+          } else {
+            const im = imps.get(x.mod);
+            if (im) target = pyModuleFile(p, im.module ? im.from : (im.from.replace(/\.$/, '') + (/\.$/.test(im.from) ? '' : '.') + im.name).replace(/^(\.+)\./, '$1'), pyPaths);
+            name = x.name;
+            if (target) { const fw = pyReexport(target, name, text, pyPaths); if (fw) { target = fw.path; name = fw.name; } }
+          }
+          if (!target || typeof text.get(target) !== 'string') { unresolved.push({ path: p, line: x.line }); return; }
+          const k = target + '\u0000' + flavour + '\u0000' + psdk.pyMajor;
+          if (!groups.has(k)) groups.set(k, { target, flavour, sdk: psdk, regs: [] });
+          groups.get(k).regs.push(Object.assign({}, x, { name, from: p }));
+        });
+      });
+      groups.forEach((g) => {
+        let ts = [];
+        try { ts = extractPy(text.get(g.target), { sdk: g.sdk, pyConsts, pyRegistrars: pyRegs, pyTemplates: pyTpl, pyStats, forceFlavour: g.flavour, extraRegs: g.regs }); } catch (e) { g.regs.forEach((x) => unresolved.push({ path: x.from, line: x.line })); return; }
+        const byLine = new Map(g.regs.map((x) => [x.line + '\u0000' + x.name, x.from]));
+        (ts.unresolved || []).forEach((u) => unresolved.push(Object.assign({ path: g.regs.find((x) => x.line === u.line) ? g.regs.find((x) => x.line === u.line).from : g.target }, u)));
+        ts.forEach((x) => {
+          const from = byLine.get(x.line + '\u0000' + x.fn) || g.regs[0].from;
+          if (byName.has(x.tool.name)) { dupes.push({ path: from, name: x.tool.name }); return; }
+          byName.add(x.tool.name); firstPath.set(x.tool.name, from);
+          found.push(Object.assign({ path: from }, x, { definedIn: g.target }));
+        });
+      });
+    }
     // FastMCP.from_fastapi: tools from the FastAPI app's routes (R-RD-37)
     let fastapiNotes = [];
     try { const fa = pyFastapiTools(readable, text); fastapiNotes = fa.notes; fa.found.forEach((x) => { if (!byName.has(x.tool.name)) { byName.add(x.tool.name); found.push(x); } else dupes.push({ path: x.path, name: x.tool.name }); }); } catch (e) { if (e && e.name === 'RangeError') throw e; fastapiNotes = ['FastMCP.from_fastapi: the reader failed on the FastAPI app, so its routes are not listed']; }
@@ -4597,6 +4745,20 @@
     if (an.unresolved) hints.unresolvedNames = an.unresolved;
     // Candidates the reader had to skip at its work limit: the list would be incomplete, so nothing is graded.
     if (an.overBudget && an.overBudget.length) hints.incomplete = incompleteWith(hints.incomplete, an.overBudget.length, an.overBudget.map((x) => x.path), an.overBudget.map((x) => x.why).filter(Boolean));
+    // An MCP server constructed in the source with tool registrations next to it, and no tool read: the reader did not
+    // see how the tools are registered. That is a limit of the reader (incomplete, registration_not_seen), not a server
+    // without tools (R-RD-43).
+    if (!candidates.length && !hints.servers && !hints.lists && !hints.incomplete) {
+      const seen = [];
+      readFiles.forEach((t, p) => {
+        if (typeof t !== 'string' || SKIP_DIR.test(p) || TEST_FILE.test(p) || notServerFolder(p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '', true)) return;
+        // or a hand-rolled JSON-RPC server: it answers "tools/list" itself
+        // (it compares a request's method with "tools/list"; a client or a type file only names it)
+        if ((constructsServer(p, t) && REGISTRATION_TOKEN.test(t)) || (/\.(ts|mts|cts|js|mjs|cjs|py)$/.test(p) && !/\.d\.ts$/.test(p) && /(?:[=!]==?\s*|\bcase\s+)["']tools\/list["']|["']tools\/list["']\s*[=!]==?/.test(t) && /\bjsonrpc\b/.test(t))) seen.push(p);
+      });
+      const unres = an.unresolved || 0;
+      if (seen.length || unres) hints.incomplete = { candidates: Math.max(unres, seen.length), files: Array.from(new Set(seen.concat((an.unresolvedList || []).map((u) => u.path)))).slice(0, 20), why: 'registration_not_seen', reasons: ['registration not seen: an MCP server is built here and registers tools in a way the reader does not follow'] };
+    }
     const lr = hints.languageRead || { files: 0, total: 0 };
     return { scanned: { exact: plan.exact.length, manifests: plan.manifests.length, source: an.files + lr.files, candidates: an.candidates + lr.files, read: an.read + lr.files, sourceTotal: plan.src.length + lr.total, capped: plan.src.length > maxRead || an.candidates > an.files, budgetHit: !!(o.state && o.state.budgetHit) }, candidates, best: candidates[0] || null, hints };
   }
@@ -4804,8 +4966,15 @@
     (got.overBudget || []).forEach((u) => an.overBudget.push(u));
   }
 
+  // A tool registration of an SDK next to a server constructor: registerTool / server.tool / add_tool / @x.tool / a
+  // tools/list handler (TypeScript, JavaScript, Python), AddTool / NewTool (Go), #[tool] / tool_router (Rust),
+  // [McpServerTool] / WithTools (C#).
+  const REGISTRATION_TOKEN = /\bregisterTool\s*\(|\.tool\s*\(|\badd_tool\s*\(|@[\w.]*\btool\b|ListToolsRequestSchema|\blist_tools\b|["']tools\/list["']|\bAddTools?\s*\(|\bNewTool\s*\(|#\[tool\b|\btool_router\b|\[McpServerTool\b|\bWithTools(?:FromAssembly)?\s*[<(]/;
   // Server source in languages the reader does not read yet, by file count (only when there are some).
-  const OTHER_LANGS = [['Go', /\.go$/], ['Rust', /\.rs$/], ['C#', /\.cs$/], ['Java', /\.java$/], ['Kotlin', /\.kts?$/], ['Ruby', /\.rb$/], ['PHP', /\.php$/], ['Swift', /\.swift$/]];
+  const OTHER_LANGS = [['Go', /\.go$/], ['Rust', /\.rs$/], ['C#', /\.cs$/], ['Java', /\.java$/], ['Kotlin', /\.kts?$/], ['Ruby', /\.rb$/], ['PHP', /\.php$/], ['Swift', /\.swift$/],
+    // and more, so a repository in one of them is named as unsupported, not as a server without tools (R-RD-43)
+    ['C++', /\.(cpp|cc|cxx|hpp|hh)$/], ['C', /\.c$/], ['Clojure', /\.clj[cs]?$/], ['Julia', /\.jl$/], ['Elixir', /\.exs?$/], ['Erlang', /\.erl$/], ['GDScript', /\.gd$/],
+    ['Dart', /\.dart$/], ['Scala', /\.scala$/], ['Lua', /\.lua$/], ['Zig', /\.zig$/], ['Haskell', /\.hs$/], ['Nim', /\.nim$/], ['OCaml', /\.mli?$/], ['Crystal', /\.cr$/]];
   function otherLanguages(paths) {
     const read = paths.filter((p) => /\.(ts|mts|cts|js|mjs|cjs|py)$/.test(p) && !SKIP_DIR.test(p) && !TEST_FILE.test(p) && !/\.d\.ts$/.test(p)).length;
     return OTHER_LANGS.map(([name, re]) => ({ name, files: paths.filter((p) => re.test(p) && !SKIP_DIR.test(p) && !/(_test\.go|Tests?\.cs)$/.test(p) && !TEST_FILE.test(p)).length }))

@@ -230,7 +230,9 @@ export function namesOnlyText(c) {
 export function incompleteText(r) {
   const x = (r.hints && r.hints.incomplete) || { candidates: 0, files: [] };
   const why = Array.isArray(x.reasons) && x.reasons.length ? x.reasons.map((r) => line(r, 120)).join('; ') : 'the reader\'s work limit on deeply nested source, a reader error, or more unreadable text than it keeps';
-  return plural(x.candidates, 'possible tool definition') + ' in ' + x.files.slice(0, 3).map((f) => line(f, 200)).join(', ') + (x.files.length > 3 ? ' and ' + (x.files.length - 3) + ' more' : '') + ' could not be read completely (' + why + '), so the list would be incomplete and nothing was graded';
+  // a server whose registrations the reader did not see (R-RD-43): what it found besides, as for no tools at all
+  const more = x.why === 'registration_not_seen' ? whyNothing(r).replace(/[.]$/, '') : '';
+  return plural(x.candidates, 'possible tool definition') + ' in ' + x.files.slice(0, 3).map((f) => line(f, 200)).join(', ') + (x.files.length > 3 ? ' and ' + (x.files.length - 3) + ' more' : '') + ' could not be read completely (' + why + '), so the list would be incomplete and nothing was graded' + (more ? '.' + more : '');
 }
 
 /** The CLI's reading of a scan: the candidate to grade, or an InputFailure (exit 3) with the same advice as the Action. */

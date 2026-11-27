@@ -37,7 +37,7 @@ import { parseList } from '../src/tools.js';
 import { analyseList } from '../src/unreadable.js';
 import { usableList } from '../src/inputs/collect.js';
 import { createRequire } from 'node:module';
-import { gradeCandidate } from './scan-static.mjs';
+import { gradeCandidate, serverSkip } from './scan-static.mjs';
 import { VERSION } from '../src/version.js';
 import { ranCommit } from './tool-commit.mjs';
 import { baselineProblems, judgeOracles } from './oracles/judge.mjs';
@@ -1119,8 +1119,6 @@ export const listed = (p) => !!(p && isObj(p.lists) && isObj(p.lists['tools/list
 /** mcp-check's own reader as the sandbox ran it (corpus/static-read.cjs), and the id of this checkout's copy of it. */
 const StaticRead = createRequire(import.meta.url)('./static-read.cjs');
 export const READER_ID = StaticRead.readerId();
-/** Why a static list is not compared, in scan-static's words (usableList's problem -> its skip detail). */
-const STATIC_SKIP = { none: 'no_tools', names: 'names_only', multiple: 'multiple_servers', incomplete: 'reader_limit' };
 
 /**
  * The static side, read and graded as scan-static reads and grades a subject (R-LP-77): the scan of mcp-check's own
@@ -1134,7 +1132,7 @@ export function staticAnswer(stat, readerId = READER_ID) {
   if (typeof sr.error === 'string' || !isObj(sr.scan) || !Array.isArray(sr.scan.candidates)) return { skip: 'reader_error' };
   const scan = { ...sr.scan, best: Number.isInteger(sr.scan.best_index) && sr.scan.best_index >= 0 ? sr.scan.candidates[sr.scan.best_index] || null : null };
   const u = usableList(scan);
-  if (u.problem) return { read: true, skip: STATIC_SKIP[u.problem] || 'reader_error' };
+  if (u.problem) return { read: true, skip: serverSkip(scan) }; // scan-static's own code for it (R-RD-43: unsupported_language too)
   try { return { read: true, candidate: u.candidate, grade: gradeCandidate(u.candidate) }; } catch (e) {
     return { read: true, skip: 'list_rejected', error: e instanceof InputError ? e.code : 'engine_error' };
   }
