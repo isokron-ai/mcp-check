@@ -288,6 +288,9 @@
     else if (tok.type === 'id' && ctx && ctx.zod && ctx.zodNames.has(tok.value) && isP(t[i + 1], '.')) {
       const z = parseZod(t, i, ctx);
       if (z) r = z;
+    } else if (tok.type === 'id' && ctx && ctx.zod && ctx.zodNames.has(tok.value + '.') && isP(t[i + 1], '.') && t[i + 2] && t[i + 2].value === 'z' && isP(t[i + 3], '.')) {
+      const z = parseZod(t, i + 2, ctx); // zod_1.z.string(): read from the z
+      if (z) r = z;
     } else if (tok.type === 'id' && tok.value === 'Object' && isP(t[i + 1], '.') && t[i + 2] && t[i + 2].value === 'freeze' && isP(t[i + 3], '(')) {
       // Object.freeze({...}): the object itself
       const v = parseValue(t, i + 4, ctx);
@@ -1132,6 +1135,8 @@
       if (m[2]) names.add(m[2]); if (m[3]) names.add(m[3]);
     }
     if (/require\(['"]zod['"]\)/.test(src) || /\bz\.object\s*\(/.test(src)) names.add('z');
+    // compiled CommonJS (tsc): `const zod_1 = require` of zod, then zod_1.z.string(). Kept as "zod_1." (the namespace whose .z is zod).
+    { const re3 = /\b(?:const|var|let)\s+([\w$]+)\s*=\s*(?:__importStar\()?require\(['"]zod(?:\/v[34])?['"]\)/g; let m3; while ((m3 = re3.exec(src))) names.add(m3[1] + '.'); }
     // zod re-exported by a module of the repository (import { zod } from '../lib/schema.js'): a binding named
     // z or zod that is used as zod.
     const re2 = /import\s+(?:\{([^}]*)\}|\*\s+as\s+(\w+)|(\w+))\s+from\s+['"][^'"]+['"]/g;
@@ -2080,7 +2085,7 @@
     if (!pre) {
       pre = new Int32Array(t.length + 1);
       for (let k = 0; k < t.length; k++) {
-        const z = (t[k].type === 'id' && ctx.zodNames && ctx.zodNames.has(t[k].value) && isP(t[k + 1], '.'))
+        const z = (t[k].type === 'id' && ctx.zodNames && (ctx.zodNames.has(t[k].value) || (ctx.zodNames.has(t[k].value + '.') && t[k + 2] && t[k + 2].value === 'z')) && isP(t[k + 1], '.'))
           || (t[k].type === 'id' && t[k].value === 'shape' && isP(t[k - 1], '.') && t[k - 2] && t[k - 2].type === 'id' && ctx.consts && ctx.consts[t[k - 2].value] && ctx.consts[t[k - 2].value].zod);
         pre[k + 1] = pre[k] + (z ? 1 : 0);
       }
