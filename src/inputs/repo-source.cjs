@@ -2971,13 +2971,22 @@
     const out = new Map();
     L.forEach((l) => {
       if (l.indent !== 0) return;
-      let m = /^from\s+(\.*[\w.]*)\s+import\s+\(?([\s\S]*?)\)?\s*$/.exec(l.text);
-      if (m) { m[2].split(',').forEach((x) => { const q = /^\s*([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?\s*$/.exec(x); if (q) out.set(q[2] || q[1], { from: m[1], name: q[1] }); }); return; }
-      m = /^import\s+([\w.]+)(?:\s+as\s+([A-Za-z_]\w*))?\s*$/.exec(l.text);
-      if (m) out.set(m[2] || m[1].split('.')[0], { from: m[2] ? m[1] : m[1].split('.')[0], name: null, module: true });
+      const tx = l.text;
+      // split by hand, in linear time: a long run of spaces in an import line must not backtrack (R-RD-21)
+      if (/^from\s/.test(tx)) {
+        const k = tx.search(/\simport\s/); if (k < 0) return;
+        const mod = tx.slice(4, k).trim(); if (!/^\.*[\w.]*$/.test(mod) || !mod) return;
+        const names = tx.slice(k + 1).replace(/^import\s+/, '').replace(/[()]/g, ' ');
+        names.split(',').forEach((x) => { const parts = x.trim().split(/\s+/); if (parts.length === 1 && /^[A-Za-z_]\w*$/.test(parts[0])) out.set(parts[0], { from: mod, name: parts[0] }); else if (parts.length === 3 && parts[1] === 'as' && /^[A-Za-z_]\w*$/.test(parts[0]) && /^[A-Za-z_]\w*$/.test(parts[2])) out.set(parts[2], { from: mod, name: parts[0] }); });
+        return;
+      }
+      if (/^import\s/.test(tx)) {
+        tx.slice(7).split(',').forEach((x) => { const parts = x.trim().split(/\s+/); if (!/^[\w.]+$/.test(parts[0] || '')) return; if (parts.length === 3 && parts[1] === 'as') out.set(parts[2], { from: parts[0], name: null, module: true }); else if (parts.length === 1) out.set(parts[0].split('.')[0], { from: parts[0].split('.')[0], name: null, module: true }); });
+      }
     });
     return out;
   }
+
   // The string literals of a Python expression (the readable parts of one that cannot be read as a whole), or null.
   function pyLiterals(text) {
     let t; try { t = pyTokenize(String(text)); } catch (e) { return null; }
