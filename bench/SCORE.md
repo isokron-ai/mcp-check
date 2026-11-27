@@ -8,11 +8,11 @@ Every positive of these checks comes from a case whose labels were written by ha
 
 | Check | TP | FP | FN | TN | Precision | Recall |
 |---|---:|---:|---:|---:|---|---|
-| `abstain` | 5 | 0 | 0 | 86 | 100.0% [56.5–100.0] | 100.0% [56.5–100.0] |
+| `abstain` | 5 | 3 | 0 | 83 | 62.5% [30.6–86.3] | 100.0% [56.5–100.0] |
 | `annot-delete-marked-safe` | 3 | 0 | 0 | 239 | 100.0% [43.9–100.0] | 100.0% [43.9–100.0] |
 | `annot-write-marked-readonly` | 3 | 0 | 0 | 239 | 100.0% [43.9–100.0] | 100.0% [43.9–100.0] |
 | `openai-name-unique` | 2 | 0 | 0 | 83 | 100.0% [34.2–100.0] | 100.0% [34.2–100.0] |
-| `outcome` | 84 | 0 | 7 | 0 | 100.0% [95.6–100.0] | 92.3% [85.0–96.2] |
+| `outcome` | 83 | 0 | 8 | 0 | 100.0% [95.6–100.0] | 91.2% [83.6–95.5] |
 | `reader-annotations` | 127 | 0 | 0 | 0 | 100.0% [97.1–100.0] | 100.0% [97.1–100.0] |
 | `reader-conditional` | 3 | 0 | 0 | 0 | 100.0% [43.9–100.0] | 100.0% [43.9–100.0] |
 | `reader-description` | 127 | 0 | 0 | 0 | 100.0% [97.1–100.0] | 100.0% [97.1–100.0] |
@@ -91,9 +91,9 @@ Only false positives can be measured for these.
 |---|---|---:|---:|---:|---|---|
 | `abstain` | committed-list | 1 | 0 | 0 | 100.0% [20.6–100.0] | 100.0% [20.6–100.0] |
 | `abstain` | go | 1 | 0 | 0 | 100.0% [20.6–100.0] | 100.0% [20.6–100.0] |
-| `abstain` | python | 1 | 0 | 0 | 100.0% [20.6–100.0] | 100.0% [20.6–100.0] |
+| `abstain` | python | 1 | 2 | 0 | 33.3% [6.2–79.2] | 100.0% [20.6–100.0] |
 | `abstain` | rust | 1 | 0 | 0 | 100.0% [20.6–100.0] | 100.0% [20.6–100.0] |
-| `abstain` | typescript | 1 | 0 | 0 | 100.0% [20.6–100.0] | 100.0% [20.6–100.0] |
+| `abstain` | typescript | 1 | 1 | 0 | 50.0% [9.4–90.5] | 100.0% [20.6–100.0] |
 | `annot-delete-marked-safe` | go | 1 | 0 | 0 | 100.0% [20.6–100.0] | 100.0% [20.6–100.0] |
 | `annot-delete-marked-safe` | python | 1 | 0 | 0 | 100.0% [20.6–100.0] | 100.0% [20.6–100.0] |
 | `annot-delete-marked-safe` | typescript | 1 | 0 | 0 | 100.0% [20.6–100.0] | 100.0% [20.6–100.0] |
@@ -153,7 +153,7 @@ Only false positives can be measured for these.
 | `outcome` | ruby | 0 | 0 | 1 | n/a | 0.0% [0.0–79.3] |
 | `outcome` | rust | 10 | 0 | 0 | 100.0% [72.3–100.0] | 100.0% [72.3–100.0] |
 | `outcome` | swift | 0 | 0 | 1 | n/a | 0.0% [0.0–79.3] |
-| `outcome` | typescript | 28 | 0 | 0 | 100.0% [87.9–100.0] | 100.0% [87.9–100.0] |
+| `outcome` | typescript | 27 | 0 | 1 | 100.0% [87.5–100.0] | 96.4% [82.3–99.4] |
 | `reader-annotations` | committed-list | 4 | 0 | 0 | 100.0% [51.0–100.0] | 100.0% [51.0–100.0] |
 | `reader-annotations` | go | 20 | 0 | 0 | 100.0% [83.9–100.0] | 100.0% [83.9–100.0] |
 | `reader-annotations` | javascript | 8 | 0 | 0 | 100.0% [67.6–100.0] | 100.0% [67.6–100.0] |
@@ -327,11 +327,11 @@ Rows with no positive and no finding in a language are left out of this table; t
 | javascript | 5 | 100.0% [56.5–100.0] | 0.0% [0.0–43.5] | 0 | 0.0% [0.0–43.5] | 0 |
 | kotlin | 1 | 0.0% [0.0–79.3] | 0.0% [0.0–79.3] | 0 | 100.0% [20.6–100.0] | 0 |
 | php | 1 | 0.0% [0.0–79.3] | 0.0% [0.0–79.3] | 0 | 100.0% [20.6–100.0] | 0 |
-| python | 18 | 88.9% [67.2–96.9] | 5.6% [1.0–25.8] | 1 | 11.1% [3.1–32.8] | 0 |
+| python | 18 | 88.9% [67.2–96.9] | 16.7% [5.8–39.2] | 1 | 0.0% [0.0–17.6] | 0 |
 | ruby | 1 | 0.0% [0.0–79.3] | 0.0% [0.0–79.3] | 0 | 100.0% [20.6–100.0] | 0 |
 | rust | 10 | 100.0% [72.3–100.0] | 10.0% [1.8–40.4] | 1 | 0.0% [0.0–27.8] | 0 |
 | swift | 1 | 0.0% [0.0–79.3] | 0.0% [0.0–79.3] | 0 | 100.0% [20.6–100.0] | 0 |
-| typescript | 28 | 100.0% [87.9–100.0] | 3.6% [0.6–17.7] | 1 | 3.6% [0.6–17.7] | 1 |
+| typescript | 28 | 96.4% [82.3–99.4] | 7.1% [2.0–22.7] | 1 | 0.0% [0.0–12.1] | 1 |
 
 ## Tool reading per idiom
 
@@ -376,7 +376,8 @@ Each of these has a label that is wrong on purpose. The scorer must disagree wit
 - **java/spring-tool-methods**: outcome: expected tools, got none (mcp-check: no tool definitions found in <case> (scanned 0 of 0 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star); missed tool city_temperature; missed tool city_humidity
 - **kotlin/sdk-add-tool**: outcome: expected tools, got unsupported (mcp-check: no tool definitions found in <case> (scanned 0 of 0 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star); missed tool roll_die; missed tool flip_coin
 - **php/attribute-tools**: outcome: expected tools, got unsupported (mcp-check: no tool definitions found in <case> (scanned 0 of 0 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star); missed tool add_integers; missed tool subtract_integers
-- **python/class-methods**: outcome: expected tools, got none (mcp-check: no tool definitions found in <case> (scanned 1 of 1 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star); missed tool distance_km; missed tool bearing_deg
-- **python/generated-loop**: outcome: expected tools, got none (mcp-check: no tool definitions found in <case> (scanned 1 of 1 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star); missed tool to_celsius; missed tool to_fahrenheit
+- **python/class-methods**: outcome: expected tools, got incomplete (mcp-check: reading <case>: 2 possible tool definitions in server.py could not be read completely (registration not seen: an MCP server is built here and registe); abstained (incomplete) on a case with a list to grade; missed tool distance_km; missed tool bearing_deg
+- **python/generated-loop**: outcome: expected tools, got incomplete (mcp-check: reading <case>: 1 possible tool definition in server.py could not be read completely (registration not seen: an MCP server is built here and register); abstained (incomplete) on a case with a list to grade; missed tool to_celsius; missed tool to_fahrenheit
 - **ruby/tool-classes**: outcome: expected tools, got unsupported (mcp-check: no tool definitions found in <case> (scanned 0 of 0 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star); missed tool ping_host; missed tool host_uptime
 - **swift/sdk-tools**: outcome: expected tools, got unsupported (mcp-check: no tool definitions found in <case> (scanned 0 of 0 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star); missed tool utc_now; missed tool unix_time
+- **typescript/dynamic-remote-list**: outcome: expected none, got incomplete (mcp-check: reading <case>: 1 possible tool definition in src/index.ts could not be read completely (registration not seen: an MCP server is built here and regis); abstained (incomplete) on a case with a list to grade

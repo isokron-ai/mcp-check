@@ -9,15 +9,15 @@
    "positives_inferred": 0,
    "all": {
     "tp": 5,
-    "fp": 0,
+    "fp": 3,
     "fn": 0,
-    "tn": 86,
+    "tn": 83,
     "precision": {
      "k": 5,
-     "n": 5,
-     "p": 1,
-     "lo": 0.5655,
-     "hi": 1
+     "n": 8,
+     "p": 0.625,
+     "lo": 0.3057,
+     "hi": 0.8632
     },
     "recall": {
      "k": 5,
@@ -110,15 +110,15 @@
     },
     "python": {
      "tp": 1,
-     "fp": 0,
+     "fp": 2,
      "fn": 0,
-     "tn": 17,
+     "tn": 15,
      "precision": {
       "k": 1,
-      "n": 1,
-      "p": 1,
-      "lo": 0.2065,
-      "hi": 1
+      "n": 3,
+      "p": 0.3333,
+      "lo": 0.0615,
+      "hi": 0.7923
      },
      "recall": {
       "k": 1,
@@ -166,15 +166,15 @@
     },
     "typescript": {
      "tp": 1,
-     "fp": 0,
+     "fp": 1,
      "fn": 0,
-     "tn": 27,
+     "tn": 26,
      "precision": {
       "k": 1,
-      "n": 1,
-      "p": 1,
-      "lo": 0.2065,
-      "hi": 1
+      "n": 2,
+      "p": 0.5,
+      "lo": 0.0945,
+      "hi": 0.9055
      },
      "recall": {
       "k": 1,
@@ -1861,23 +1861,23 @@
    "positives_hand": 78,
    "positives_inferred": 13,
    "all": {
-    "tp": 84,
+    "tp": 83,
     "fp": 0,
-    "fn": 7,
+    "fn": 8,
     "tn": 0,
     "precision": {
-     "k": 84,
-     "n": 84,
+     "k": 83,
+     "n": 83,
      "p": 1,
-     "lo": 0.9563,
+     "lo": 0.9558,
      "hi": 1
     },
     "recall": {
-     "k": 84,
+     "k": 83,
      "n": 91,
-     "p": 0.9231,
-     "lo": 0.8496,
-     "hi": 0.9622
+     "p": 0.9121,
+     "lo": 0.836,
+     "hi": 0.9548
     }
    },
    "by_language": {
@@ -2072,23 +2072,23 @@
      }
     },
     "typescript": {
-     "tp": 28,
+     "tp": 27,
      "fp": 0,
-     "fn": 0,
+     "fn": 1,
      "tn": 0,
      "precision": {
-      "k": 28,
-      "n": 28,
+      "k": 27,
+      "n": 27,
       "p": 1,
-      "lo": 0.8794,
+      "lo": 0.8754,
       "hi": 1
      },
      "recall": {
-      "k": 28,
+      "k": 27,
       "n": 28,
-      "p": 1,
-      "lo": 0.8794,
-      "hi": 1
+      "p": 0.9643,
+      "lo": 0.8229,
+      "hi": 0.9937
      }
     }
    }
@@ -7852,18 +7852,18 @@
    "expected_abstain": 1,
    "expected_unsupported": 0,
    "abstention": {
-    "k": 1,
+    "k": 3,
     "n": 18,
-    "p": 0.0556,
-    "lo": 0.0099,
-    "hi": 0.2576
+    "p": 0.1667,
+    "lo": 0.0584,
+    "hi": 0.3922
    },
    "unsupported": {
-    "k": 2,
+    "k": 0,
     "n": 18,
-    "p": 0.1111,
-    "lo": 0.031,
-    "hi": 0.328
+    "p": 0,
+    "lo": 0,
+    "hi": 0.1759
    },
    "outcome_accuracy": {
     "k": 16,
@@ -7956,25 +7956,25 @@
    "expected_abstain": 1,
    "expected_unsupported": 1,
    "abstention": {
-    "k": 1,
+    "k": 2,
     "n": 28,
-    "p": 0.0357,
-    "lo": 0.0063,
-    "hi": 0.1771
+    "p": 0.0714,
+    "lo": 0.0198,
+    "hi": 0.2265
    },
    "unsupported": {
-    "k": 1,
+    "k": 0,
     "n": 28,
-    "p": 0.0357,
-    "lo": 0.0063,
-    "hi": 0.1771
+    "p": 0,
+    "lo": 0,
+    "hi": 0.1206
    },
    "outcome_accuracy": {
-    "k": 28,
+    "k": 27,
     "n": 28,
-    "p": 1,
-    "lo": 0.8794,
-    "hi": 1
+    "p": 0.9643,
+    "lo": 0.8229,
+    "hi": 0.9937
    }
   }
  },
@@ -8100,12 +8100,14 @@
    "missed tool subtract_integers"
   ],
   "python/class-methods": [
-   "outcome: expected tools, got none (mcp-check: no tool definitions found in <case> (scanned 1 of 1 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star)",
+   "outcome: expected tools, got incomplete (mcp-check: reading <case>: 2 possible tool definitions in server.py could not be read completely (registration not seen: an MCP server is built here and registe)",
+   "abstained (incomplete) on a case with a list to grade",
    "missed tool distance_km",
    "missed tool bearing_deg"
   ],
   "python/generated-loop": [
-   "outcome: expected tools, got none (mcp-check: no tool definitions found in <case> (scanned 1 of 1 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star)",
+   "outcome: expected tools, got incomplete (mcp-check: reading <case>: 1 possible tool definition in server.py could not be read completely (registration not seen: an MCP server is built here and register)",
+   "abstained (incomplete) on a case with a list to grade",
    "missed tool to_celsius",
    "missed tool to_fahrenheit"
   ],
@@ -8118,6 +8120,10 @@
    "outcome: expected tools, got unsupported (mcp-check: no tool definitions found in <case> (scanned 0 of 0 source files, and the committed tool lists and MCPB manifests). Grade the live list instead: star)",
    "missed tool utc_now",
    "missed tool unix_time"
+  ],
+  "typescript/dynamic-remote-list": [
+   "outcome: expected none, got incomplete (mcp-check: reading <case>: 1 possible tool definition in src/index.ts could not be read completely (registration not seen: an MCP server is built here and regis)",
+   "abstained (incomplete) on a case with a list to grade"
   ]
  },
  "disagreement_keys": {
@@ -8137,12 +8143,14 @@
    "reader-tools|fn|subtract_integers"
   ],
   "python/class-methods": [
-   "outcome|fn|tools->none",
+   "abstain|fp|incomplete",
+   "outcome|fn|tools->incomplete",
    "reader-tools|fn|bearing_deg",
    "reader-tools|fn|distance_km"
   ],
   "python/generated-loop": [
-   "outcome|fn|tools->none",
+   "abstain|fp|incomplete",
+   "outcome|fn|tools->incomplete",
    "reader-tools|fn|to_celsius",
    "reader-tools|fn|to_fahrenheit"
   ],
@@ -8155,6 +8163,10 @@
    "outcome|fn|tools->unsupported",
    "reader-tools|fn|unix_time",
    "reader-tools|fn|utc_now"
+  ],
+  "typescript/dynamic-remote-list": [
+   "abstain|fp|incomplete",
+   "outcome|fn|none->incomplete"
   ]
  }
 }
