@@ -348,7 +348,7 @@ test('controls: the forgery control is contained; its marker is fresh and comes 
 test('runShard: one bundle per item, failed ones too; a rate limit stops reading and the rest report a retryable skip', async () => {
   const out = join(tmp('run'), 'out');
   const calls = [];
-  const subjects = { 'o/good': { files: jsLiteral }, 'o/notools': { files: { 'README.md': 'x' } }, 'o/limited': { repo: 403, repoHeaders: { 'x-ratelimit-remaining': '0' } }, 'o/after': { files: jsLiteral } };
+  const subjects = { 'o/good': { files: jsLiteral }, 'o/notools': { files: { 'README.md': 'x', 'index.js': 'console.log("hello");\n' } }, 'o/limited': { repo: 403, repoHeaders: { 'x-ratelimit-remaining': '0' } }, 'o/after': { files: jsLiteral } };
   const items = itemsOf(['o/good', 'o/gone', 'o/notools', 'weird:subject', 'o/limited', 'o/after']);
   const logs = [];
   const r = await runShard({ shardId: 's-1', attemptId: 'att-1', items, out, fetch: fakeGithub(subjects, calls), token: TOKEN, log: (s) => logs.push(s) });

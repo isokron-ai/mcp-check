@@ -256,3 +256,11 @@ test('R-RD-44: a package whose own manifest was not read (past the reader\'s lim
   assert.equal(t.annotations, undefined, 'its package manifest (depth 3) is not read, so the root lock does not decide');
   assert.ok((r.best.notes || []).some((n) => /the package manifest in packages\/servers\/deep was not read/.test(n)), JSON.stringify(r.best.notes));
 });
+
+test('R-RD-44: two runtime manifests of one folder that would install different majors leave it unknown', () => {
+  const an = R.analyseRepo(new Map([['pyproject.toml', '[project]\nname = "x"\ndependencies = ["mcp>=1"]\n'], ['requirements-legacy.txt', 'mcp<2\n'], ['server.py', SNAKE_SERVER('srv')]]));
+  assert.equal(an.found[0].tool.annotations, undefined, 'no key is guessed');
+  assert.ok(an.notes.some((n) => /manifests of one folder would install different Python SDK majors/.test(n)), an.notes.join('\n'));
+  const agree = R.analyseRepo(new Map([['pyproject.toml', '[project]\nname = "x"\ndependencies = ["mcp>=1.9"]\n'], ['requirements.txt', 'mcp==2.1.0\n'], ['server.py', SNAKE_SERVER('srv')]]));
+  assert.deepEqual(agree.found[0].tool.annotations, { readOnlyHint: true }, 'manifests that agree decide');
+});

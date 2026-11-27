@@ -3385,18 +3385,25 @@
     if (d === null) return importsMajor ? imp : none;
     // the runtime requirements of the declaring folder; a dependency group or extra that would change the answer: unknown
     let uncond = PY_MCP_MAJORS.slice(); const variants = []; const groups = []; let declared = false; let unreadable = false; const from = []; const said = [];
+    const perFile = []; // [file, the majors its runtime requirements allow, what it says]
     for (const [p, text] of sc.decl.get(d) || []) {
+      let own = PY_MCP_MAJORS.slice(); let ownSaid = null;
       const take = (dist, majors, map) => pyReqSpecs(p, text, dist).forEach((r) => {
         const a0 = specMajors(r.spec, majors); if (!a0) { unreadable = true; return; }
         const a = map ? Array.from(new Set(a0.map(map))) : a0;
         const txt = dist + (r.spec ? r.spec : ' (any version)') + (r.marker ? ' ; ' + r.marker : '') + ' in ' + p + (r.group ? ' [' + r.group + ']' : '');
         if (r.group) { groups.push({ a, txt }); return; }
         declared = true;
-        if (r.marker) variants.push({ a, marker: r.marker }); else uncond = uncond.filter((x) => a.includes(x));
+        if (r.marker) variants.push({ a, marker: r.marker }); else { uncond = uncond.filter((x) => a.includes(x)); own = own.filter((x) => a.includes(x)); ownSaid = ownSaid || txt; }
         from.push(dist === 'mcp' ? 'mcp' : 'fastmcp'); said.push(txt);
       });
       take('mcp', PY_MCP_MAJORS, null); take('fastmcp', PY_FASTMCP_MAJORS, pyMcpOfFastmcp); take('fastmcp-slim', PY_FASTMCP_MAJORS, pyMcpOfFastmcp);
+      if (ownSaid) perFile.push([p, own, ownSaid]);
     }
+    // two runtime manifests of one folder (pyproject.toml and requirements-legacy.txt) that would install different
+    // majors on their own: which one installs is not known, so neither decides (R-RD-43)
+    const alone = perFile.map(([, a]) => { const w = narrowed(a); return w.length ? Math.max(...w) : null; });
+    if (perFile.length > 1 && new Set(alone).size > 1) return { major: null, why: 'manifests of one folder would install different Python SDK majors (' + perFile.slice(0, 3).map((x) => x[2]).join('; ') + ')' };
     if (unreadable) return { major: null, why: 'a requirement on mcp or fastmcp could not be read' };
     const base = narrowed(uncond);
     // a lock in the declaring folder or above it (a workspace root) pins the version, when the folder's own runtime
