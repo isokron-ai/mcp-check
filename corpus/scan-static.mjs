@@ -251,6 +251,11 @@ export const SERVERS_SHARE = 0.6;
 /** Languages the reader reads besides TypeScript, JavaScript and Python: a repository mostly in one of them is not
  * `unsupported_language` (one list for the subject and for each server folder). */
 export const READ_LANGUAGES = Object.freeze(['Go', 'Rust', 'C#']);
+/** A scan that found no source file of any language: no file the reader reads, and none in another language. */
+export function noSource(scan) {
+  const s = (scan && scan.scanned) || {};
+  return s.sourceTotal === 0 && !((scan.hints && scan.hints.otherLanguages) || []).length;
+}
 /** Why one server folder of a multi-server repository has no grades: the subject's codes (usableList). */
 export function serverSkip(scan) {
   const u = usableList(scan);
@@ -259,7 +264,7 @@ export function serverSkip(scan) {
   if (u.problem === 'names') return 'names_only';
   if (u.problem === 'none') {
     const lang = ((scan.hints && scan.hints.otherLanguages) || [])[0];
-    return lang && lang.files >= lang.readFiles && !READ_LANGUAGES.includes(lang.name) ? 'unsupported_language' : 'no_tools';
+    return (lang && lang.files >= lang.readFiles && !READ_LANGUAGES.includes(lang.name)) || noSource(scan) ? 'unsupported_language' : 'no_tools';
   }
   return null;
 }
@@ -448,6 +453,8 @@ export async function scanSubject(subject, { fetch: fetchImpl = globalThis.fetch
         out.language_hint = typeof lang.name === 'string' && /^[A-Za-z#+]{1,20}$/.test(lang.name) ? lang.name : null;
         throw fail('unsupported_language');
       }
+      // no source file of any language (a README, manifest or Dockerfile only): what the reader reads is not here (R-RD-43)
+      if (noSource(r)) throw fail('unsupported_language');
       throw fail('no_tools');
     }
 
