@@ -4753,7 +4753,8 @@
       readFiles.forEach((t, p) => {
         if (typeof t !== 'string' || SKIP_DIR.test(p) || TEST_FILE.test(p) || notServerFolder(p.includes('/') ? p.slice(0, p.lastIndexOf('/')) : '', true)) return;
         // or a hand-rolled JSON-RPC server: it answers "tools/list" itself
-        if ((constructsServer(p, t) && REGISTRATION_TOKEN.test(t)) || (/\.(ts|mts|cts|js|mjs|cjs|py)$/.test(p) && /["']tools\/list["']/.test(t) && /\bjsonrpc\b/.test(t))) seen.push(p);
+        // (it compares a request's method with "tools/list"; a client or a type file only names it)
+        if ((constructsServer(p, t) && REGISTRATION_TOKEN.test(t)) || (/\.(ts|mts|cts|js|mjs|cjs|py)$/.test(p) && !/\.d\.ts$/.test(p) && /(?:[=!]==?\s*|\bcase\s+)["']tools\/list["']|["']tools\/list["']\s*[=!]==?/.test(t) && /\bjsonrpc\b/.test(t))) seen.push(p);
       });
       const unres = an.unresolved || 0;
       if (seen.length || unres) hints.incomplete = { candidates: Math.max(unres, seen.length), files: Array.from(new Set(seen.concat((an.unresolvedList || []).map((u) => u.path)))).slice(0, 20), why: 'registration_not_seen', reasons: ['registration not seen: an MCP server is built here and registers tools in a way the reader does not follow'] };
