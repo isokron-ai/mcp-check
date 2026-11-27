@@ -22,7 +22,8 @@ export const NEEDS = {
 
 const hasProps = (s) => !!s && typeof s === 'object' && !!s.properties && typeof s.properties === 'object' && Object.keys(s.properties).length > 0;
 
-/** Map(tool name -> Set(part)) from the reader's result. A schema part is dropped when the tool's schema has properties. */
+/** Map(tool name -> Set(part)) from the reader's result. A schema part is dropped when the tool's schema has properties,
+ *  unless the reader lists the schema as read in part (reader.unreadable.inputSchemaPaths). */
 export function unreadableParts(tools, reader) {
   const out = new Map();
   const u = reader && reader.unreadable && typeof reader.unreadable === 'object' ? reader.unreadable : null;
@@ -31,7 +32,9 @@ export function unreadableParts(tools, reader) {
   PARTS.forEach((p) => {
     (Array.isArray(u[p]) ? u[p] : []).forEach((n) => {
       const t = byName.get(String(n)); if (!t) return;
-      if (p === 'inputSchema' && hasProps(t.inputSchema)) return;
+      // a schema with properties is graded, unless the reader read it only in part (inputSchemaPaths: a property it kept by
+      // name with an unknown schema, or a spread whose names it could not know)
+      if (p === 'inputSchema' && hasProps(t.inputSchema) && !(u.inputSchemaPaths && typeof u.inputSchemaPaths === 'object' && Array.isArray(u.inputSchemaPaths[t.name]))) return;
       if (!out.has(t.name)) out.set(t.name, new Set());
       out.get(t.name).add(p);
     });

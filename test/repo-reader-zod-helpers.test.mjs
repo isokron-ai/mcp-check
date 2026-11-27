@@ -253,8 +253,8 @@ test('R-RD-27: a factory imported directly is read; a re-exported one, one with 
   const p = tool(an, 'compare_tools_lists').inputSchema.properties;
   assert.deepEqual(p.before, { anyOf: [{ type: 'string' }, { type: 'array', items: {} }], description: 'The earlier tool list: the answer to tools/list. Limit 2 MiB of JSON and 2000 tools.' });
   assert.deepEqual(p.after, { anyOf: [{ type: 'string' }, { type: 'array', items: {} }] }, 'a description built from an argument the reader cannot read is left out');
-  assert.deepEqual(p.third, {}, 'a factory reached through a re-export is not followed');
-  assert.deepEqual(p.fourth, {}, 'a factory body with statements before its return is not read');
+  assert.deepEqual(p.third, { 'x-mcp-check-unknown': true }, 'a factory reached through a re-export is not followed: kept by name, marked unknown (R-RD-38)');
+  assert.deepEqual(p.fourth, { 'x-mcp-check-unknown': true }, 'a factory body with statements before its return is not read: kept by name, marked unknown (R-RD-38)');
 });
 
 // Synthetic: the shape of R-RD-15's timing test, with a zod factory.
