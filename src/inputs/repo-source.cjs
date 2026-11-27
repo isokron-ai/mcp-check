@@ -145,6 +145,69 @@
   // part of a string) to the collector of the tool being read (LOST.cur). Objects and constants read earlier keep
   // what they collected and hand it on whenever they are used again. publicTools turns it into unreadable.text.
   const LOST = { cur: null };
+  // A property of an object literal whose value (or a spread whose names) the reader could not read is not left out
+  // silently either: the object keeps a list of those places (SCHEMA_HOLES: object -> [{ key | spread, reason, expr }]).
+  // When the object is a tool's properties, the property keeps its name with the unknown mark as its schema, and the
+  // tool's input schema is listed as read in part (markSchemaHoles, publicTools).
+  const SCHEMA_HOLES = new WeakMap();
+  // Properties objects of a raw shape or a zod object: their required list follows from each value (.optional()), so a
+  // value the reader could not read leaves the property's requiredness unknown, not "required".
+  const SHAPE_PROPS = new WeakSet();
+  function exprText(t, a, b) {
+    const out = []; for (let k = a; k < b && k < t.length && out.length < 8; k++) out.push(t[k].type === 'str' ? JSON.stringify(t[k].value) : String(t[k].value));
+    const x = out.join('').replace(/\s+/g, ' '); return (b - a > 8 ? x + '…' : x).slice(0, 80);
+  }
+  // A tool's input schema with the properties the reader could not read put back by name, each with the unknown mark as
+  // its schema (nothing invented), and the list of those places on the tool (_schemaHoles: [{ path, reason, expr,
+  // required }]). A property of a raw shape or a zod object is required or not by its value, so its requiredness is
+  // "unknown" and it is not listed as required; a JSON Schema literal's own required list is kept as written. A spread
+  // or a computed key adds names the reader cannot know: it is listed at the properties path.
+  function markSchemaHoles(tool) {
+    const holes = [];
+    const walk = (sch, path, depth) => {
+      if (!sch || typeof sch !== 'object' || Array.isArray(sch) || depth > MAX_VDEPTH) return sch;
+      let out = sch;
+      const props = sch.properties;
+      if (props && typeof props === 'object' && !Array.isArray(props)) {
+        let np = null; let req = Array.isArray(sch.required) ? sch.required : null; let reqChanged = false;
+        const shape = SHAPE_PROPS.has(props); const order = [];
+        (SCHEMA_HOLES.get(props) || []).forEach((h) => {
+          if (h.spread) { holes.push({ path: path.concat('properties').join('.'), reason: h.reason + ': names and schemas not known', expr: h.expr, required: 'unknown' }); return; }
+          const at = path.concat('properties', h.key).join('.');
+          if (holes.some((x) => x.path === at)) return;
+          const required = shape ? 'unknown' : !!(req && req.includes(h.key));
+          holes.push({ path: at, reason: h.reason, expr: h.expr, required });
+          np = np || Object.assign({}, props); np[h.key] = { [UNKNOWN_MARK]: true }; if (h.at !== undefined) order.push([h.key, h.at]);
+          if (shape && req && req.includes(h.key)) { req = req.filter((x) => x !== h.key); reqChanged = true; }
+        });
+        if (order.length) {
+          // put each unread property back where it was in the source
+          const keys = Object.keys(props); order.sort((a, b) => a[1] - b[1]).forEach(([k, at], n) => { if (!keys.includes(k)) keys.splice(Math.min(at + n, keys.length), 0, k); });
+          const ordered = {}; keys.concat(Object.keys(np).filter((k) => !keys.includes(k))).forEach((k) => { ordered[k] = np[k]; }); np = ordered;
+        }
+        Object.keys(np || props).forEach((k) => {
+          const c = (np || props)[k]; const w = walk(c, path.concat('properties', k), depth + 1);
+          if (w !== c) { np = np || Object.assign({}, props); np[k] = w; }
+        });
+        if (np || reqChanged) {
+          out = Object.assign({}, sch);
+          if (np) out.properties = np;
+          if (reqChanged) { if (req.length) out.required = req; else delete out.required; }
+        }
+      }
+      if (sch.items && typeof sch.items === 'object' && !Array.isArray(sch.items)) {
+        const w = walk(sch.items, path.concat('items'), depth + 1);
+        if (w !== sch.items) { out = out === sch ? Object.assign({}, sch) : out; out.items = w; }
+      }
+      return out;
+    };
+    if (!tool || !tool.inputSchema || typeof tool.inputSchema !== 'object') return tool;
+    if (tool._unreadable && tool._unreadable.includes('inputSchema')) return tool;
+    const s = walk(tool.inputSchema, [], 0);
+    if (holes.length) { tool.inputSchema = s; tool._schemaHoles = holes; }
+    return tool;
+  }
+  function addHoles(o, hs) { if (!o || typeof o !== 'object' || !hs || !hs.length) return; SCHEMA_HOLES.set(o, (SCHEMA_HOLES.get(o) || []).concat(hs)); }
   function lose(x) { if (LOST.cur && x && (typeof x === 'string' ? x.trim() : x.length)) LOST.cur.push(x); }
   // Like collecting, but what fn leaves is not handed on: the caller passes it on (lose) only if it uses the result.
   function quietly(fn) {
@@ -398,10 +461,11 @@
     const r = e.r;
     const copy = r.value && r.value !== SKIP && typeof r.value === 'object' ? Object.assign({}, r.value) : r.value;
     if (copy !== r.value && OPTIONAL_OF.has(r.value)) OPTIONAL_OF.set(copy, OPTIONAL_OF.get(r.value));
+    if (copy !== r.value && SCHEMA_HOLES.has(r.value)) SCHEMA_HOLES.set(copy, SCHEMA_HOLES.get(r.value));
     return Object.assign({}, r, { value: copy });
   }
   function parseObjectOnce(t, i, ctx) {
-    const o = {}; let exact = true; const optionalKeys = new Set(); const unknown = new Set(); const partial = new Set(); let spreadUnknown = false; const childOptional = {}; const literals = {}; i++;
+    const o = {}; let exact = true; const optionalKeys = new Set(); const unknown = new Set(); const partial = new Set(); let spreadUnknown = false; const childOptional = {}; const literals = {}; const holes = []; i++;
     while (i < t.length && !isP(t[i], '}')) {
       const k = t[i];
       if (isP(k, '...')) {
@@ -410,25 +474,26 @@
         if (nx && nx.type === 'id' && ctx && ctx.consts) { const ch = idChain(t, i + 1); const v = chainValue(ctx, ch.ids); if (v) { c = ch.ids.length === 1 ? v.c : { value: v.value, exact: v.c.exact, zod: false }; end = ch.end; } else { const sp = spreadExpr(t, i + 1, ctx); if (sp) { c = sp; end = sp.end; } } }
         if (c && !c.zod && c.value && typeof c.value === 'object' && !Array.isArray(c.value) && (isP(t[end], ',') || isP(t[end], '}'))) {
           Object.assign(o, c.value); exact = exact && c.exact !== false; if (c.optionalKeys) c.optionalKeys.forEach((x) => optionalKeys.add(x));
+          if (SCHEMA_HOLES.has(c.value)) holes.push(...SCHEMA_HOLES.get(c.value).map((h) => Object.assign({}, h, { at: undefined })));
           i = isP(t[end], ',') ? end + 1 : end; continue;
         }
-        exact = false; spreadUnknown = true; { const e2 = skipExpr(t, i + 1); lose(literalsArr(t, i + 1, e2)); i = e2; } if (isP(t[i], ',')) i++; continue;
+        exact = false; spreadUnknown = true; { const e2 = skipExpr(t, i + 1); holes.push({ spread: true, reason: 'a spread the reader cannot read', expr: exprText(t, i, e2) }); lose(literalsArr(t, i + 1, e2)); i = e2; } if (isP(t[i], ',')) i++; continue;
       }
       let key = null;
       if (k.type === 'str' || k.type === 'id') key = String(k.value);
       else if (k.type === 'num') key = String(k.value);
-      else if (isP(k, '[')) { exact = false; i = skipExpr(t, i); if (isP(t[i], ',')) i++; continue; }
+      else if (isP(k, '[')) { exact = false; { const e2 = skipExpr(t, i); holes.push({ spread: true, reason: 'a computed key the reader cannot read', expr: exprText(t, i, e2) }); i = e2; } if (isP(t[i], ',')) i++; continue; }
       if (key === null) return { value: SKIP, end: skipExpr(t, i), exact: false };
       // method shorthand: name(...) { } / async name() {} / get x() {}
       if (isP(t[i + 1], '(') || (k.type === 'id' && (key === 'async' || key === 'get' || key === 'set') && t[i + 1] && t[i + 1].type === 'id')) {
         const mk = isP(t[i + 1], '(') ? key : t[i + 1].value;
         let j = i + 1; while (t[j] && !isP(t[j], '{')) j++;
         j = matchClose(t, j) + 1;
-        if (!HANDLER_KEYS.has(mk)) { unknown.add(mk); if (LITERAL_KEYS.has(mk)) { literals[mk] = literalsIn(t, i, j); lose(literalsArr(t, i, j)); } }
+        if (!HANDLER_KEYS.has(mk)) { unknown.add(mk); holes.push({ key: mk, reason: 'a method, not a value', expr: exprText(t, i, j) }); if (LITERAL_KEYS.has(mk)) { literals[mk] = literalsIn(t, i, j); lose(literalsArr(t, i, j)); } }
         exact = false; i = isP(t[j], ',') ? j + 1 : j; continue;
       }
       if (isP(t[i + 1], ',') || isP(t[i + 1], '}')) { // shorthand { name }
-        if (ctx && ctx.consts && hasOwn(ctx.consts, key)) { const c = ctx.consts[key]; if (c.lost) lose(c.lost); o[key] = c.value; exact = exact && c.exact; if (c.optional) optionalKeys.add(key); } else { exact = false; if (!HANDLER_KEYS.has(key)) unknown.add(key); }
+        if (ctx && ctx.consts && hasOwn(ctx.consts, key)) { const c = ctx.consts[key]; if (c.lost) lose(c.lost); o[key] = c.value; exact = exact && c.exact; if (c.optional) optionalKeys.add(key); } else { exact = false; if (!HANDLER_KEYS.has(key)) { unknown.add(key); holes.push({ key, reason: 'a name the reader cannot resolve', expr: key, at: Object.keys(o).length }); } }
         i += isP(t[i + 1], ',') ? 2 : 1; continue;
       }
       let j = i + 1;
@@ -440,13 +505,14 @@
       // annotations with a hint the reader cannot know ({ readOnlyHint: readOnly }) are not graded as if the hint were absent (R-RD-12)
       if (key === 'annotations' && v.value !== SKIP && ((v.unknownKeys && v.unknownKeys.size) || v.spreadUnknown)) partial.add(key);
       if (v.optionalKeys && v.optionalKeys.size) childOptional[key] = v.optionalKeys;
-      if (v.value !== SKIP && tooDeepValue(v.value)) { lose(literalsArr(t, j + 1, v.end)); v.value = SKIP; unknown.add(key); exact = false; }
-      else if (v.value !== SKIP) { o[key] = v.value; exact = exact && v.exact !== false; } else if (!HANDLER_KEYS.has(key)) { exact = false; unknown.add(key); if (LITERAL_KEYS.has(key)) literals[key] = literalsIn(t, j + 1, v.end); lose(literalsArr(t, j + 1, v.end)); if (ctx && ctx.placeholder) o[key] = {}; }
+      if (v.value !== SKIP && tooDeepValue(v.value)) { lose(literalsArr(t, j + 1, v.end)); v.value = SKIP; unknown.add(key); exact = false; holes.push({ key, reason: 'a value nested too deep to read', expr: exprText(t, j + 1, v.end), at: Object.keys(o).length }); }
+      else if (v.value !== SKIP) { o[key] = v.value; exact = exact && v.exact !== false; } else if (!HANDLER_KEYS.has(key)) { exact = false; unknown.add(key); holes.push({ key, reason: 'a value the reader cannot read', expr: exprText(t, j + 1, v.end), at: Object.keys(o).length }); if (LITERAL_KEYS.has(key)) literals[key] = literalsIn(t, j + 1, v.end); lose(literalsArr(t, j + 1, v.end)); if (ctx && ctx.placeholder) o[key] = {}; }
       i = v.end;
       if (isP(t[i], ',')) i++;
       else if (!isP(t[i], '}')) return { value: SKIP, end: skipExpr(t, i), exact: false };
     }
     if (optionalKeys.size) OPTIONAL_OF.set(o, optionalKeys);
+    if (holes.length) SCHEMA_HOLES.set(o, holes);
     return { value: o, end: i + 1, exact, optionalKeys, unknownKeys: unknown, partialKeys: partial, spreadUnknown, childOptional, literals };
   }
   // The string literals between tokens a and b (the readable parts of an expression that cannot be read as a whole),
@@ -825,6 +891,8 @@
       const v = shape[k];
       props[k] = v; if (!(optionalKeys && optionalKeys.has(k))) required.push(k);
     });
+    if (SCHEMA_HOLES.has(shape)) SCHEMA_HOLES.set(props, SCHEMA_HOLES.get(shape));
+    SHAPE_PROPS.add(props);
     const s = { type: 'object', properties: props };
     if (required.length) s.required = required;
     if (!fl || fl.closed) s.additionalProperties = false;
@@ -837,6 +905,7 @@
   function rootSchema(props, optionalKeys, fl) {
     if (!optionalKeys && props && typeof props === 'object') optionalKeys = OPTIONAL_OF.get(props);
     const f = fl || FL_DEFAULT;
+    if (props && typeof props === 'object') SHAPE_PROPS.add(props);
     const shaped = { type: 'object', properties: props };
     const req = Object.keys(props).filter((k) => !(optionalKeys && optionalKeys.has(k))); if (req.length) shaped.required = req;
     if (f.closed && !(f.emptyShapeOpen && !Object.keys(props).length)) shaped.additionalProperties = false;
@@ -1191,20 +1260,21 @@
   function zodShapeAt(t, i, ctx) {
     // a raw shape object whose values are zod: returns schema with required list, or z.object(...)
     if (isP(t[i], '{')) {
-      const optionalKeys = new Set(); const props = {}; let exact = true; let j = i + 1;
+      const optionalKeys = new Set(); const props = {}; let exact = true; let j = i + 1; const holes = [];
       while (j < t.length && !isP(t[j], '}')) {
         if (isP(t[j], '...')) { // {...SHARED, a: z.string()}
           const nx = t[j + 1]; let c = nx && nx.type === 'id' && ctx.consts && Object.prototype.hasOwnProperty.call(ctx.consts, nx.value) ? ctx.consts[nx.value] : null;
           const sp = c ? null : spreadExpr(t, j + 1, ctx); // ...rangeArgs('Defaults to today.'), ...Object.fromEntries(…)
-          if (sp && (isP(t[sp.end], ',') || isP(t[sp.end], '}'))) { Object.assign(props, sp.value); exact = exact && sp.exact !== false; if (sp.optionalKeys) sp.optionalKeys.forEach((x) => optionalKeys.add(x)); j = isP(t[sp.end], ',') ? sp.end + 1 : sp.end; continue; }
-          if (c && !c.zod && c.value && typeof c.value === 'object' && !Array.isArray(c.value) && (isP(t[j + 2], ',') || isP(t[j + 2], '}'))) { Object.assign(props, c.value); exact = exact && c.exact !== false; if (c.optionalKeys) c.optionalKeys.forEach((x) => optionalKeys.add(x)); j += isP(t[j + 2], ',') ? 3 : 2; continue; }
-          exact = false; j = skipExpr(t, j + 1); if (isP(t[j], ',')) j++; continue;
+          if (sp && (isP(t[sp.end], ',') || isP(t[sp.end], '}'))) { Object.assign(props, sp.value); if (SCHEMA_HOLES.has(sp.value)) holes.push(...SCHEMA_HOLES.get(sp.value).map((h) => Object.assign({}, h, { at: undefined }))); exact = exact && sp.exact !== false; if (sp.optionalKeys) sp.optionalKeys.forEach((x) => optionalKeys.add(x)); j = isP(t[sp.end], ',') ? sp.end + 1 : sp.end; continue; }
+          if (c && !c.zod && c.value && typeof c.value === 'object' && !Array.isArray(c.value) && (isP(t[j + 2], ',') || isP(t[j + 2], '}'))) { Object.assign(props, c.value); if (SCHEMA_HOLES.has(c.value)) holes.push(...SCHEMA_HOLES.get(c.value).map((h) => Object.assign({}, h, { at: undefined }))); exact = exact && c.exact !== false; if (c.optionalKeys) c.optionalKeys.forEach((x) => optionalKeys.add(x)); j += isP(t[j + 2], ',') ? 3 : 2; continue; }
+          exact = false; { const e2 = skipExpr(t, j + 1); holes.push({ spread: true, reason: 'a spread the reader cannot read', expr: exprText(t, j, e2) }); j = e2; } if (isP(t[j], ',')) j++; continue;
         }
-        const k = t[j]; if (!(k.type === 'id' || k.type === 'str') || !isP(t[j + 1], ':')) { exact = false; j = skipExpr(t, j); if (isP(t[j], ',')) j++; continue; }
+        const k = t[j]; if (!(k.type === 'id' || k.type === 'str') || !isP(t[j + 1], ':')) { exact = false; { const e2 = skipExpr(t, j); holes.push(k.type === 'id' && (isP(t[j + 1], ',') || isP(t[j + 1], '}')) ? { key: String(k.value), reason: 'a name the reader cannot resolve', expr: String(k.value), at: Object.keys(props).length } : { spread: true, reason: 'an entry the reader cannot read', expr: exprText(t, j, e2) }); j = e2; } if (isP(t[j], ',')) j++; continue; }
         const v = parseValue(t, j + 2, ctx);
-        if (v.value !== SKIP) { props[k.value] = v.value; if (v.optional) optionalKeys.add(String(k.value)); } else { exact = false; props[k.value] = {}; lose(literalsArr(t, j + 2, v.end)); }
+        if (v.value !== SKIP) { props[k.value] = v.value; if (v.optional) optionalKeys.add(String(k.value)); } else { exact = false; holes.push({ key: String(k.value), reason: 'a value the reader cannot read', expr: exprText(t, j + 2, v.end), at: Object.keys(props).length }); lose(literalsArr(t, j + 2, v.end)); }
         exact = exact && v.exact !== false; j = v.end; if (isP(t[j], ',')) j++;
       }
+      if (holes.length) SCHEMA_HOLES.set(props, holes);
       return { schema: rootSchema(props, optionalKeys, ctx.fl), end: j + 1, exact };
     }
     const v = parseValue(t, i, ctx);
@@ -1344,6 +1414,7 @@
       const inList = extra && extra.inList !== undefined ? extra.inList : null;
       if (seen.has(tool.name) && !(inList !== null && listOf.get(tool.name) === inList)) return false;
       if (tool._unreadable && !tool._unreadable.length) delete tool._unreadable;
+      markSchemaHoles(tool); if (tool._schemaHoles && fidelity === 'literal') fidelity = 'derived';
       const dup = seen.has(tool.name);
       seen.add(tool.name); if (inList !== null && !dup) listOf.set(tool.name, inList);
       const rest = Object.assign({}, extra || {}); delete rest.inList; if (dup) rest.listDup = true;
@@ -2290,12 +2361,13 @@
       while (k < close) { const v = pyValue(t, k, ctx); if (v.value === PY_SKIP) { exact = false; const e2 = pySkip(t, k); lose(literalsArr(t, k, e2)); k = e2; } else { a.push(v.value); exact = exact && v.exact !== false; k = v.end; } if (isP(t[k], ',')) { comma = true; k++; } else break; }
       if (k >= close || isP(t[k], tok.value === '[' ? ']' : ')')) r = isP(tok, '(') && !comma && a.length === 1 ? { value: a[0], end: close + 1, exact } : { value: a, end: close + 1, exact };
     } else if (isP(tok, '{')) {
-      const close = pyMatch(t, i); const o = {}; let k = i + 1; let exact = true;
+      const close = pyMatch(t, i); const o = {}; let k = i + 1; let exact = true; const holes = [];
       while (k < close) {
-        const kv = pyValue(t, k, ctx); if (kv.value === PY_SKIP || typeof kv.value !== 'string' || !isP(t[kv.end], ':')) { exact = false; lose(literalsArr(t, k, close)); break; }
-        const v = pyValue(t, kv.end + 1, ctx); if (v.value === PY_SKIP) { exact = false; const e2 = pySkip(t, kv.end + 1); lose(literalsArr(t, kv.end + 1, e2)); k = e2; } else { o[kv.value] = v.value; exact = exact && v.exact !== false; k = v.end; }
+        const kv = pyValue(t, k, ctx); if (kv.value === PY_SKIP || typeof kv.value !== 'string' || !isP(t[kv.end], ':')) { exact = false; holes.push({ spread: true, reason: isP(t[k], '**') ? 'a spread the reader cannot read' : 'a key the reader cannot read', expr: exprText(t, k, close) }); lose(literalsArr(t, k, close)); break; }
+        const v = pyValue(t, kv.end + 1, ctx); if (v.value === PY_SKIP) { exact = false; const e2 = pySkip(t, kv.end + 1); holes.push({ key: kv.value, reason: 'a value the reader cannot read', expr: exprText(t, kv.end + 1, e2), at: Object.keys(o).length }); lose(literalsArr(t, kv.end + 1, e2)); k = e2; } else { o[kv.value] = v.value; exact = exact && v.exact !== false; k = v.end; }
         if (isP(t[k], ',')) k++; else break;
       }
+      if (holes.length) SCHEMA_HOLES.set(o, holes);
       r = { value: o, end: close + 1, exact };
     } else if (tok.type === 'id' && isP(t[i + 1], '(') || (tok.type === 'id' && isP(t[i + 1], '.'))) {
       const ids = [tok.value]; let m = i + 1; while (isP(t[m], '.') && t[m + 1] && t[m + 1].type === 'id') { ids.push(t[m + 1].value); m += 2; }
@@ -2463,6 +2535,7 @@
     const add = (tool, line, extra) => {
       if (!tool || typeof tool.name !== 'string' || !tool.name || seen.has(tool.name)) return;
       if (tool._unreadable && !tool._unreadable.length) delete tool._unreadable;
+      markSchemaHoles(tool);
       seen.add(tool.name); tools.push(Object.assign({ tool, fidelity: 'derived', line }, extra || {}));
     };
     // every def of the file: name -> { index of its logical line }
@@ -4372,6 +4445,12 @@
         const lt = lostText(t._lost);
         if (lt.over) over.push(t.name); else if (lt.text) (unreadable.text = unreadable.text || {})[t.name] = lt.text;
         t = Object.assign({}, t); delete t._lost;
+      }
+      if (t._schemaHoles) {
+        // read in part: the schema is kept with its unread properties marked; its checks are skipped (see unreadable.js)
+        (unreadable.inputSchema = unreadable.inputSchema || []).push(t.name);
+        (unreadable.inputSchemaPaths = unreadable.inputSchemaPaths || {})[t.name] = t._schemaHoles.map((h) => Object.assign({}, h));
+        t = Object.assign({}, t); delete t._schemaHoles;
       }
       const u = t._unreadable;
       if (t._deprecated) { t = Object.assign({}, t); delete t._deprecated; }

@@ -121,7 +121,7 @@ export const LIVE_ADVICE = 'Grade the live list instead: start the server with -
  *  source text it could not place, which is scanned), for the report's source; null when none. */
 export function unreadableNames(c) {
   const u = c && c.unreadable; if (!u) return null;
-  const o = {}; Object.keys(u).forEach((k) => { if (k === 'text') { const n = Object.keys(u.text || {}); if (n.length) o.text = n; } else if (Array.isArray(u[k]) && u[k].length) o[k] = u[k]; });
+  const o = {}; Object.keys(u).forEach((k) => { if (k === 'text') { const n = Object.keys(u.text || {}); if (n.length) o.text = n; } else if (k === 'inputSchemaPaths') { if (u[k] && typeof u[k] === 'object' && Object.keys(u[k]).length) o[k] = u[k]; } else if (Array.isArray(u[k]) && u[k].length) o[k] = u[k]; });
   return Object.keys(o).length ? o : null;
 }
 

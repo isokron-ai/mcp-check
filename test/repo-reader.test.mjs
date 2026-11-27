@@ -79,15 +79,16 @@ test('FastMCP (TypeScript) addTool: draft-07 closed parameters; an unreadable pr
   assert.equal(s.$schema, 'http://json-schema.org/draft-07/schema#');
   assert.equal(s.additionalProperties, false);
   assert.deepEqual(Object.keys(s.properties), ['url', 'n']);
-  assert.deepEqual(s.properties.url, {});
-  assert.deepEqual(s.required, ['url']);
+  assert.deepEqual(s.properties.url, { 'x-mcp-check-unknown': true }); // kept by name, no schema invented (R-RD-32)
+  assert.equal(s.required, undefined); // url's requiredness depends on its unread value: not guessed (R-RD-32)
   assert.equal(s.properties.n.maximum, 9007199254740991);
 });
-test('a raw zod shape property the reader cannot read stays in the schema as an empty schema, and is required', () => {
+test('a raw zod shape property the reader cannot read stays in the schema by name, marked unknown, and is not listed as required', () => {
   const code = 'import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";\nimport { z } from "zod";\nserver.registerTool("a", { description: "d", inputSchema: { a: z.string(), b: weird(), c: z.string().optional() } }, async () => ({}));';
   const s = tools('x.ts', code)[0].inputSchema;
   assert.deepEqual(Object.keys(s.properties), ['a', 'b', 'c']);
-  assert.deepEqual(s.required, ['a', 'b']);
+  assert.deepEqual(s.properties.b, { 'x-mcp-check-unknown': true });
+  assert.deepEqual(s.required, ['a']); // b: requiredness unknown (R-RD-32)
 });
 test('{...SHARED}: a constant spread in the same file, and one defined in another file of the repository', () => {
   const shared = 'export const sharedParams = { namespace: { type: "string", description: "ns", default: "default" } };\nexport const ctxParam = { context: { type: "string" } };\n';
