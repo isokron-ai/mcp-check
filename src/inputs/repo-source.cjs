@@ -2615,7 +2615,7 @@
     const pyTextKind = (text) => {
       let tt; try { tt = pyTokenize(String(text || '')); } catch (e) { return 'other'; }
       if (isId0(tt[0]) && /^(ToolAnnotations|dict)$/.test(tt[0].value) && isP(tt[1], '(')) {
-        for (let k = 2; k < tt.length; k++) {
+        for (let k = 2; k < Math.min(tt.length, 256); k++) {
           if (isId0(tt[k]) && isP(tt[k + 1], '=')) { const v = tt[k + 2]; if (v && !(v.type === 'num' || v.type === 'str' || (v.type === 'id' && /^(True|False|None)$/.test(v.value)))) return UK.valueKind(tt, k + 2, undefined, { tokens: srcTokens() }); }
           if (isP(tt[k], '**')) return 'spread';
         }

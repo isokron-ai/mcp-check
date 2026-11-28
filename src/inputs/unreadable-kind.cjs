@@ -28,9 +28,16 @@ const isP = (tok, v) => !!tok && tok.type === 'p' && tok.value === v;
 const isId = (tok, v) => !!tok && tok.type === 'id' && (v === undefined || tok.value === v);
 const OPEN = { '(': ')', '[': ']', '{': '}' };
 
-/** The index just past the expression that starts at i: at the first top-level `,`, `)`, `]`, `}` or `;`. */
+/**
+ * At most this many tokens of an expression are looked at: its kind shows in its head, and a bound keeps the reader
+ * linear on hostile, deeply nested source (one classification never costs more than this, whatever the nesting).
+ */
+const MAX_SCAN = 256;
+
+/** The index just past the expression that starts at i: at the first top-level `,`, `)`, `]`, `}` or `;`, or MAX_SCAN on. */
 function exprEnd(t, i, end) {
   let depth = 0;
+  end = Math.min(end, i + MAX_SCAN);
   for (let k = i; k < end; k++) {
     const x = t[k];
     if (x && x.type === 'p') {
@@ -83,7 +90,7 @@ const PY_COND = new Set(['if', 'or', 'and']);
  * @param {{ imports?: Set<string>, tokens?: object[] }} [opts]  imports: names imported in the file; tokens: the file's
  *   tokens to read them from, when t is only a part of it
  */
-function valueKind(t, i, end, opts) {
+function valueKind(t, i, end, opts, depth0) {
   const tok = t && t[i];
   if (!tok) return 'other';
   const stop = exprEnd(t, i, Math.min(end === undefined ? t.length : end, t.length));
@@ -109,9 +116,11 @@ function valueKind(t, i, end, opts) {
   if (isP(tok, '(')) {
     // (a) => …, () => …: a function; (expr): look inside
     let d = 0; let k = i;
-    for (; k < stop; k++) { if (isP(t[k], '(')) d++; else if (isP(t[k], ')')) { d--; if (d === 0) break; } }
+    const lim = Math.min(t.length, i + MAX_SCAN);
+    for (; k < lim; k++) { if (isP(t[k], '(')) d++; else if (isP(t[k], ')')) { d--; if (d === 0) break; } }
     if (isP(t[k + 1], '=>')) return 'function';
-    return valueKind(t, i + 1, k, opts);
+    // one level of parentheses is looked into, no more (the bound above)
+    return depth0 ? 'other' : valueKind(t, i + 1, k, opts, 1);
   }
   if (isP(tok, '{') || isP(tok, '[')) return 'nested';
   if (tok.type === 'id') {
@@ -119,7 +128,7 @@ function valueKind(t, i, end, opts) {
     let k = i + 1; let member = false;
     for (;;) {
       if ((isP(t[k], '.') || isP(t[k], '?.')) && isId(t[k + 1])) { member = true; k += 2; continue; }
-      if (isP(t[k], '[')) { member = true; let d = 0; for (; k < stop; k++) { if (isP(t[k], '[')) d++; else if (isP(t[k], ']')) { d--; if (d === 0) break; } } k++; continue; }
+      if (isP(t[k], '[')) { member = true; let d = 0; for (; k < stop; k++) { if (isP(t[k], '[')) d++; else if (isP(t[k], ']')) { d--; if (d === 0) break; } } k++; if (k >= stop) break; continue; }
       break;
     }
     if (isP(t[k], '(') || isP(t[k], '`')) return 'call';

@@ -103,7 +103,7 @@ def echo(text: str) -> str:
     return text
 `,
   });
-  assert.deepEqual((await kindsOf(py('description=describe("echo")', '\n\ndef describe(n):\n    return n.upper()\n'))).descriptions, { call: 1 });
+  assert.deepEqual((await kindsOf(py('description=os.environ["ECHO_DESCRIPTION"]', 'import os\n'))).descriptions, { member: 1 });
   assert.deepEqual((await kindsOf(py('description=ECHO_DESCRIPTION', 'from texts_package import ECHO_DESCRIPTION\n'))).descriptions, { imported: 1 });
-  assert.deepEqual((await kindsOf(py('annotations=ToolAnnotations(readOnlyHint=read_only())', '\n\ndef read_only():\n    return True\n'))).annotations, { call: 1 });
+  assert.deepEqual((await kindsOf(py('annotations=ToolAnnotations(readOnlyHint=os.environ.get("RO") == "1")', 'import os\n'))).annotations, { call: 1 });
 });
