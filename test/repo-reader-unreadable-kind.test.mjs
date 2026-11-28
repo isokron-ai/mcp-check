@@ -76,6 +76,10 @@ test('R-RD-45: scan-static gives the kind of each unreadable TypeScript descript
   assert.deepEqual((await kindsOf(tsTool('ECHO_DESCRIPTION', 'import { ECHO_DESCRIPTION } from "texts-package";\n'))).descriptions, { imported: 1 });
   assert.deepEqual((await kindsOf(tsTool('`Echo ${process.env.WHAT}`'))).descriptions, { template_expr: 1 });
   assert.deepEqual((await kindsOf(tsTool('process.env.LONG ? "Echo the text back." : "Echo."'))).descriptions, { conditional: 1 });
+  // annotations with a hint the reader cannot know (R-RD-12): the hint's own kind
+  const ann = tsTool('"Echo the text back."', 'let readOnly = process.argv.length > 2;\n');
+  ann['src/index.ts'] = ann['src/index.ts'].replace('inputSchema: { text: z.string() },', 'inputSchema: { text: z.string() },\n  annotations: { readOnlyHint: readOnly },');
+  assert.deepEqual((await kindsOf(ann)).annotations, { identifier: 1 });
   const k = await kindsOf(tsTool('describe("echo")', 'function describe(n: string) { return n.toUpperCase(); }\n'));
   assert.deepEqual(Object.keys(k).sort(), ['annotations', 'descriptions', 'input_schemas', 'names']);
   assert.deepEqual([k.input_schemas, k.annotations, k.names], [{}, {}, {}]);
@@ -89,7 +93,7 @@ test('R-RD-45: a readable tool has no kinds; kindCounts keeps only our words wit
   assert.deepEqual(kindCounts(['call']), {});
 });
 
-test('R-RD-45: scan-static gives the kind of an unreadable Python description and of unreadable annotations', async () => {
+test('R-RD-45: scan-static gives the kind of an unreadable Python description', async () => {
   const py = (deco, head = '') => ({
     'pyproject.toml': '[project]\nname = "f"\nversion = "0.0.1"\ndependencies = ["mcp"]\n',
     'server.py': `from mcp.server.fastmcp import FastMCP
@@ -105,5 +109,4 @@ def echo(text: str) -> str:
   });
   assert.deepEqual((await kindsOf(py('description=os.environ["ECHO_DESCRIPTION"]', 'import os\n'))).descriptions, { member: 1 });
   assert.deepEqual((await kindsOf(py('description=ECHO_DESCRIPTION', 'from texts_package import ECHO_DESCRIPTION\n'))).descriptions, { imported: 1 });
-  assert.deepEqual((await kindsOf(py('annotations=ToolAnnotations(readOnlyHint=os.environ.get("RO") == "1")', 'import os\n'))).annotations, { call: 1 });
 });
