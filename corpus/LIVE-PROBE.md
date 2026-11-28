@@ -110,6 +110,25 @@ The run is named `shard <shard_id>`.
      (ours); a tool built for other platforms only, or for a newer .NET, is `platform_unsupported` (tool); several
      commands is `entry_ambiguous` (tool). A tool built for an older .NET runs rolled forward, so its crash is no evidence
      against it (`start_env_limited`).
+   - **Go from source** (no registry type; R-LP-91..95, `corpus/go-entry.mjs`). A subject with no package we can run
+     (`no_package` or `unsupported_package`) whose repository has a `go.mod` at its root is built at its commit in the
+     sandbox (mcp-surface-corpus launchPlan, kind `go`, R-SBX-62): `go install <package path>@<full commit>` in its pinned
+     official Go image with `-mod=readonly -buildvcs=false`, `GOTOOLCHAIN=local` and `CGO_ENABLED=0`, through
+     `proxy.golang.org` and `sum.golang.org` only (nothing else; `storage.googleapis.com` only if the proof run shows a
+     build needs it), at most 15 minutes, run in the node image as a static binary. The commit is the item's `sha`, else
+     the repository's head read once and then pinned as the target's commit; never `@latest`. The package path is chosen
+     from the repository at that commit, read as data from api.github.com only (the root tree, `go.mod`, the first bytes
+     of at most six `.go` files a folder, never a build): the module root when it is `package main`, else the one main
+     package under `cmd/`, else the one named for the repository or for its registry or `server.json` name; several
+     and none named is `entry_ambiguous` (ours: we would have to guess), none at all `no_main_package` (a library:
+     nothing to start). A `go.mod` with a `replace` or `exclude` directive is `go_install_refused` (the go command will
+     not install it by version; ours). A tree GitHub will not list whole, or a file we could not read, is
+     `go_source_unreadable` (ours). Arguments, environment names and transport come from the `server.json` the
+     repository itself ships, when it ships one; never a value we invent, so a server that needs an argument ends
+     `start_needs_config` (ours). The build runs after the other subjects with a time limit of its own, as a crate
+     does. Every failure of the build is ours (`install_build_failed`, `install_blocked`, `install_resource_limit`,
+     `install_timeout`): the subject's install is never judged by Go's own words. The token of the plan step (the job's
+     read-only one) goes to api.github.com only; a rate limit or outage there is a retryable skip.
    - **MCP bundles** (registry type `mcpb`, R-LP-72..74, `corpus/mcpb.mjs`). The planner downloads the bundle from the
      GitHub release asset the registry or seed list names (github.com, then its release-asset hosts only; every
      redirect checked; at most 200 MiB, read as a stream), checks its sha256 against the registry's `fileSha256` when
@@ -354,6 +373,9 @@ and the 4x free-disk rule. An image on another host is unassessed until the list
 | `package_not_runnable` (the package declares nothing we could start, in the package manager's or its own manifest's words: cargo's "nothing to install ... because it has no binaries", a NuGet package that is no tool, a bundle with no manifest, no server or no command, or whose manifest names a file it does not hold; only for a registry entry in the subject's own namespace) | `install_failed_registry` | subject | no |
 | `package_error_unowned` (a package-level error (not in the registry, nothing to install) for a package whose registry entry is not shown to be the subject's: seed-only, seed-matched or repository-only) | `install_failed_registry` | tool | no |
 | `entry_unresolved` (the install succeeded but our entry helper found nothing it may start: its name pattern, regular-file or record checks) | `install_failed_registry` | tool | no |
+| `no_main_package` (a Go repository with no `package main` at its module root or under `cmd/`: a library, nothing to start) | `no_runnable_artifact` | tool | no |
+| `go_install_refused` (its `go.mod` has a `replace` or `exclude` directive, which `go install <package>@<commit>` refuses) | `no_runnable_artifact` | tool | no |
+| `go_source_unreadable` (GitHub would not list the root tree whole, or `go.mod` or a source folder could not be read) | `no_runnable_artifact` | tool | no |
 | `entry_ambiguous` (several binaries, or several tool commands, and none named for the package: we would have to guess) | `install_failed_registry` | tool | no |
 | `platform_unsupported` (the package builds for other platforms only: a .NET tool for Windows runtimes, a bundle's binary that is not linux/amd64 or whose manifest does not list linux; our platform is linux/amd64) | `no_runnable_artifact` | tool | no |
 | `needs_credentials` (the registry entry declares a required env var, no cause of ours above applies, no crash signature unless it asks for configuration, the server exited non-zero by itself (not 125, 126, 127 or 137; no signal or time limit), with every argument filled and no guessed PyPI entry, and it made no network attempt) | `start_requires_credentials` | subject | no |

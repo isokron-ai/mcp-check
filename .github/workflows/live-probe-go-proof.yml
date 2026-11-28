@@ -1,0 +1,192 @@
+# Proof of the Go-from-source path of the live-probe lane (R-LP-91, corpus/go-entry.mjs, corpus/LIVE-PROBE.md "Go"): on
+# every pull request that touches it, two Go repositories with no registry package (mark3labs/mcp-filesystem-server and
+# isaacphi/mcp-language-server, corpus/fixtures/live-probe/go-proof-shard.json) are resolved from the real registry, seed
+# list and GitHub, built with `go install <package>@<full commit>` in the real sandbox (gVisor, uid 65534, no
+# capabilities, read-only root, the writable work overlay, an allowlist proxy that lets the module proxy and the checksum
+# database through and nothing else), started, graded, and bundled with tool-qa's worker-kit in dry-run mode (built and
+# checked, never encrypted or uploaded). corpus/go-proof-check.mjs then fails the job unless each was planned at its
+# commit, built in the sandbox, reached no other host and ended with an outcome that is not the server's fault. What each
+# ended with is printed; neither needs to list tools (one wants an allowed directory, the other a workspace and a language
+# server binary).
+#
+# The steps from "Deadline for the subjects" to "Check the controls and build the bundles" are those of
+# live-probe-selftest.yml, without the oracle and fuzz stages, which prove other things. No secret, a token with
+# contents: read only, no pull_request_target. SURFACE_CORPUS_REF is the mcp-surface-corpus commit with the Go plan
+# (R-SBX-62); it moves to main's commit once that lands.
+
+name: live-probe-go-proof
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/live-probe-go-proof.yml
+      - corpus/go-entry.mjs
+      - corpus/go-proof-check.mjs
+      - corpus/live-probe.mjs
+      - corpus/live-probe-sandbox.sh
+      - corpus/live-probe-driver.mjs
+      - corpus/fixtures/live-probe/go-proof-shard.json
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: live-probe-go-proof-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  WORKER_KIT_REF: '2ffcea16117ec679398f83eefe8c6fa66d38bac6'
+  SURFACE_CORPUS_REF: '393add3203c6d966e680f6e6f9be841586a7d15a'
+
+jobs:
+  # The pinned sandbox's own conformance check (mcp-surface-corpus's reusable workflow, at SURFACE_CORPUS_REF), on a
+  # runner of its own: gVisor, the firewall and the hostile self test, passed only when its telemetry recomputes a pass.
+  sandbox:
+    permissions:
+      contents: read
+    uses: isokron-ai/mcp-surface-corpus/.github/workflows/sandbox-conformance.yml@393add3203c6d966e680f6e6f9be841586a7d15a # SURFACE_CORPUS_REF
+    with:
+      mutations: false
+      artifact-prefix: live-probe-go-proof-sandbox
+
+  proof:
+    needs: sandbox
+    if: needs.sandbox.outputs.verdict == 'pass'
+    name: live-probe-go-proof
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    steps:
+      - name: The fixture shard as dispatch inputs
+        env:
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          [[ "$RUN_ID" =~ ^[0-9]{1,20}$ && "$RUN_ATTEMPT" =~ ^[0-9]{1,5}$ ]]
+          {
+            echo "SHARD_ID=live-probe-go-proof-$RUN_ID-$RUN_ATTEMPT"
+            echo "ATTEMPT_ID=goproof-$RUN_ID-$RUN_ATTEMPT"
+            echo "TOOL_SHA="
+          } >> "$GITHUB_ENV"
+      - id: deadline
+        name: Deadline for the subjects
+        run: echo "at=$(( $(date +%s) + 34 * 60 ))" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ env.TOOL_SHA || github.sha }}
+      # The lane's code is the commit tool-qa pinned (tool_sha), else the commit this run was dispatched on (R-PIN-01).
+      # The job stops unless the checkout is exactly it; what ran is then reported in each bundle's manifest `tools`.
+      - id: tool
+        name: Check the checkout is the commit asked for
+        env:
+          TOOL_SHA: ${{ env.TOOL_SHA }}
+        run: |
+          head=$(git rev-parse HEAD)
+          want="${TOOL_SHA:-$GITHUB_SHA}"
+          if [[ "$head" != "$want" ]]; then echo "::error title=live-probe::the checkout is not the commit asked for"; exit 1; fi
+          echo "commit=$head" >> "$GITHUB_OUTPUT"
+      - name: The fixture items
+        run: echo "ITEMS=$(jq -c '[.items[] | {subject, run_key, fence}]' corpus/fixtures/live-probe/go-proof-shard.json)" >> "$GITHUB_ENV"
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Check out the sandbox (isokron-ai/mcp-surface-corpus)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/mcp-surface-corpus
+          ref: ${{ env.SURFACE_CORPUS_REF }}
+          path: surface-corpus
+          persist-credentials: false
+      - name: Check out the seed list and worker kit (isokron-ai/tool-qa)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: isokron-ai/tool-qa
+          ref: ${{ env.WORKER_KIT_REF }}
+          path: tool-qa
+          sparse-checkout: |
+            history/seed-v1.json
+            worker-kit/
+            ingest/
+            scripts/lib/yaml-lite.mjs
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      # Before any target, on this runner: the same sandbox guard (gVisor, the firewall, the hostile self test and its
+      # telemetry check), from the commit SURFACE_CORPUS_REF pins. It fails the job unless the verdict is pass.
+      - id: guard
+        name: Sandbox guard on this runner (mcp-surface-corpus sandbox-guard)
+        uses: isokron-ai/mcp-surface-corpus/sandbox-guard@393add3203c6d966e680f6e6f9be841586a7d15a # SURFACE_CORPUS_REF
+        with:
+          out: ${{ runner.temp }}/live-probe/selftest
+      # Registry and GitHub reads only (JSON, fixed hosts): nothing of a subject is fetched to run here.
+      - id: plan
+        name: Resolve each subject's install method
+        env:
+          SHARD_ID: ${{ env.SHARD_ID }}
+          ATTEMPT_ID: ${{ env.ATTEMPT_ID }}
+          ITEMS: ${{ env.ITEMS }}
+          # Read-only token for api.github.com's rate limit when the resolver reads a Go repository's tree (corpus/go-entry.mjs);
+          # sent to api.github.com only, never to a container.
+          GH_TOKEN: ${{ github.token }}
+        run: node corpus/live-probe.mjs plan "$RUNNER_TEMP/live-probe" --msc surface-corpus --seed tool-qa/history/seed-v1.json
+      # Every subject runs in the sandbox's containers, never in this shell. The step ends only after the sandbox is
+      # gone: no container or volume at all, no process of uid 65534, no runsc process.
+      - id: sandbox
+        name: Run the controls and subjects in the sandbox
+        env:
+          # Read-only token, for the GitHub API's rate limit when the driver reads repository facts; sent to
+          # api.github.com only, never to a container.
+          GH_TOKEN: ${{ github.token }}
+          DEADLINE: ${{ steps.deadline.outputs.at }}
+          GUARD_VERDICT: ${{ steps.guard.outputs.verdict }}
+          GUARD_SHA: ${{ steps.guard.outputs.sandbox-sha }}
+        run: corpus/live-probe-sandbox.sh "$RUNNER_TEMP/live-probe" surface-corpus "$DEADLINE"
+      - id: bundle
+        name: Check the controls and build the bundles
+        env:
+          # The commit that ran, proved by the checkout step; each bundle reports it in manifest `tools`.
+          MCP_CHECK_COMMIT: ${{ steps.tool.outputs.commit }}
+        run: node corpus/live-probe.mjs bundle "$RUNNER_TEMP/live-probe"
+      - name: Build and check bundle 0 (dry run)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' && steps.plan.outputs.has_0 == 'true' }}
+        uses: isokron-ai/tool-qa/worker-kit@2ffcea16117ec679398f83eefe8c6fa66d38bac6 # WORKER_KIT_REF
+        with:
+          bundle-dir: ${{ runner.temp }}/live-probe/out/0/bundle
+          meta-file: ${{ runner.temp }}/live-probe/out/0/meta.json
+          attempt-id: ${{ env.ATTEMPT_ID }}
+          item-index: '0'
+          fence: ${{ steps.plan.outputs.fence_0 }}
+          run-key: ${{ steps.plan.outputs.run_key_0 }}
+          dry-run: 'true'
+      - name: Build and check bundle 1 (dry run)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' && steps.plan.outputs.has_1 == 'true' }}
+        uses: isokron-ai/tool-qa/worker-kit@2ffcea16117ec679398f83eefe8c6fa66d38bac6 # WORKER_KIT_REF
+        with:
+          bundle-dir: ${{ runner.temp }}/live-probe/out/1/bundle
+          meta-file: ${{ runner.temp }}/live-probe/out/1/meta.json
+          attempt-id: ${{ env.ATTEMPT_ID }}
+          item-index: '1'
+          fence: ${{ steps.plan.outputs.fence_1 }}
+          run-key: ${{ steps.plan.outputs.run_key_1 }}
+          dry-run: 'true'
+      - name: The proof check (planned at the commit, built in the sandbox, the proxy and checksum database only, not the server's fault)
+        if: ${{ !cancelled() && steps.bundle.outcome == 'success' }}
+        run: node corpus/go-proof-check.mjs "$RUNNER_TEMP/live-probe" "$RUNNER_TEMP/tool-qa-result"
+      - name: Keep the bundles and the sandbox's records
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: live-probe-go-proof
+          path: |
+            ${{ runner.temp }}/tool-qa-result/*.tar
+            ${{ runner.temp }}/live-probe/plan.json
+            ${{ runner.temp }}/live-probe/sandbox.json
+            ${{ runner.temp }}/live-probe/targets-builds.json
+            ${{ runner.temp }}/live-probe/driver-builds/**/record.json
+            ${{ runner.temp }}/live-probe/driver-builds/**/steps.log
+            ${{ runner.temp }}/live-probe/driver-builds/**/probe-env.json
+            ${{ runner.temp }}/live-probe/driver-builds/**/probe-bare.json
+          if-no-files-found: warn
+          retention-days: 7

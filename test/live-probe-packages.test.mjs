@@ -21,6 +21,7 @@ function res(status, body) {
 function registry(servers) {
   return async (url) => {
     const u = new URL(url);
+    if (u.hostname === 'api.github.com') return res(404, {}); // R-LP-91: a repository GitHub does not know is not a Go repository
     if (u.hostname !== 'registry.modelcontextprotocol.io') throw new Error('unexpected fetch ' + url);
     const q = (u.searchParams.get('search') || '').toLowerCase();
     return res(200, { servers: servers.filter((s) => s.name.toLowerCase().includes(q) || (s.packages || []).some((p) => String(p.identifier).toLowerCase().includes(q))).map((server) => ({ server })) });
@@ -289,6 +290,7 @@ function releases(map, calls = []) {
     const u = new URL(url);
     if (u.hostname === 'registry.modelcontextprotocol.io') return res(200, { servers: [] });
     if (u.hostname === 'github.com') { const x = map[String(url)]; if (!x) return res(404, 'Not Found'); return { status: 302, ok: false, headers: { get: (h) => (h === 'location' ? x.location ?? ASSET + '&f=' + encodeURIComponent(String(url)) : null) } }; }
+    if (u.hostname === 'api.github.com') return res(404, {});
     if (u.hostname === 'release-assets.githubusercontent.com') { const k = decodeURIComponent(u.searchParams.get('f') || ''); return map[k] ? res(200, map[k].body) : res(404, ''); }
     throw new Error('unexpected fetch ' + url);
   };
@@ -574,6 +576,7 @@ test('R-LP-72: a bundle\'s own failure is the subject\'s only for an entry in it
     const u = new URL(url);
     if (u.hostname === 'registry.modelcontextprotocol.io') { const q = (u.searchParams.get('search') || '').toLowerCase(); return res(200, { servers: servers.filter((s) => s.name.toLowerCase().includes(q)).map((server) => ({ server })) }); }
     if (u.hostname === 'github.com') return res(404, 'Not Found');
+    if (u.hostname === 'api.github.com') return res(404, {});
     throw new Error('unexpected fetch ' + url);
   };
   const r = (servers, seed = new Map()) => LP.resolveSubject({ subject: 'victim/repo', repo: 'victim/repo' }, { fetch: reg(servers), seed });

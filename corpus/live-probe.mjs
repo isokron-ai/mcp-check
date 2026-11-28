@@ -43,6 +43,7 @@ import { ranCommit } from './tool-commit.mjs';
 import { baselineProblems, judgeOracles } from './oracles/judge.mjs';
 import { pypiEntry } from './pypi-entry.mjs';
 import { mcpbLaunch } from './mcpb.mjs';
+import { goSource } from './go-entry.mjs';
 
 export const LANE = 'live-probe';
 export const FORMAT = 'isokron-mcp-check-live-probe/1';
@@ -103,7 +104,7 @@ export const BUILD_RESERVE_S = 12 * 60;
 /** R-LP-57: more time for a kind whose install image is large and pulled at its first subject (the .NET SDK image). */
 export const PACKAGE_ALLOWANCE_S = Object.freeze({ nuget: 180, mcpb: 120 });
 /** The launch kinds that build in the sandbox. */
-export const isBuild = (launch) => !!(launch && launch.kind === 'cargo');
+export const isBuild = (launch) => !!(launch && (launch.kind === 'cargo' || launch.kind === 'go'));
 export const SUBJECT_TIMEOUT_MIN_S = 90;
 export const SUBJECT_TIMEOUT_MAX_S = 300;
 export const PROBE_MS = 45_000;
@@ -156,6 +157,13 @@ export const DETAILS = Object.freeze({
   package_error_unowned: ['install_failed_registry', false, 'install', 'tool'],
   // R-LP-54: several binaries (or commands) and none named for the package: we would have to guess, so it is ours.
   entry_ambiguous: ['install_failed_registry', false, 'install', 'tool'],
+  // R-LP-91: a Go repository with no registry package is built at its commit (corpus/go-entry.mjs). A repository with no
+  // `package main` at its root or under cmd/ is a library: there is nothing to start (ours to report, nobody's defect). A
+  // go.mod with a replace or exclude directive is one `go install <package>@<commit>` refuses; a tree GitHub would not
+  // list whole, or a file we could not read, is our limit. None of them is the server's.
+  no_main_package: ['no_runnable_artifact', false, 'resolve', 'tool'],
+  go_install_refused: ['no_runnable_artifact', false, 'resolve', 'tool'],
+  go_source_unreadable: ['no_runnable_artifact', false, 'resolve', 'tool'],
   // R-LP-57: the package has a build for other platforms only (a .NET tool for Windows runtimes): our platform, not a defect.
   platform_unsupported: ['no_runnable_artifact', false, 'install', 'tool'],
   // R-LP-72..74: MCP bundles (corpus/mcpb.mjs). Ours: a host we do not fetch from, a runtime or launcher we do not start
@@ -862,6 +870,7 @@ export function purlOf(type, id, version) {
   if (type === 'npm') return 'pkg:npm/' + id.split('/').map(encodeURIComponent).join('/') + v;
   if (type === 'pypi') return 'pkg:pypi/' + encodeURIComponent(id.toLowerCase().replace(/[-_.]+/g, '-')) + v;
   if (type === 'cargo') return 'pkg:cargo/' + encodeURIComponent(id) + v;
+  if (type === 'golang') return 'pkg:golang/' + id.split('/').map(encodeURIComponent).join('/') + v;
   if (type === 'nuget') return 'pkg:nuget/' + encodeURIComponent(id) + v;
   return null;
 }
@@ -968,10 +977,34 @@ export const SUBJECT_RESOLVE_DETAILS = Object.freeze(['bundle_unavailable', 'bun
 const DETAIL_ORDER = ['unverified_registry_entry', 'image_too_large', 'oci_host_not_allowed', 'unsupported_transport', 'image_registry_unreadable', 'image_access_denied', 'registry_query_refused', 'start_needs_config', 'platform_unsupported', 'bundle_runtime_unsupported', 'bundle_unreadable', 'bundle_too_large', 'bundle_host_not_allowed', 'bundle_fetch_refused', 'bundle_unowned', 'image_unavailable', 'bundle_unavailable', 'bundle_hash_mismatch', 'bundle_invalid', 'package_not_runnable', 'launch_invalid', 'private_registry', 'unsupported_package'];
 
 /**
+ * R-LP-91: the sandbox launch of a Go repository with no registry package: `go install <package path>@<full commit>`
+ * (corpus/go-entry.mjs chooses the path). The arguments, environment names and transport come from the registry-format
+ * server.json the repository itself ships, when it ships one: never a value we invent. Returns { launch, choice, commit },
+ * { detail } (with `why` for a transport we do not run), or {} when the repository has no go.mod at its root.
+ */
+async function goLaunchFor(item, own, { fetch: fetchImpl, token }) {
+  const g = await goSource({ repo: item.repo, sha: item.sha || null, names: own.map((e) => e.server.name), fetch: fetchImpl, token, httpDetail });
+  if (g.none) return {};
+  if (g.detail) return { detail: g.detail };
+  const pkg = isObj(g.serverJson) && Array.isArray(g.serverJson.packages) && isObj(g.serverJson.packages[0]) ? g.serverJson.packages[0] : {};
+  const tr = transportOf(pkg.transport, transportVars(pkg));
+  if (tr.detail) return { detail: tr.detail, why: tr.why, identifier: g.launch.package };
+  const { args, unfilled } = packageArgs(pkg.packageArguments);
+  const { env, names } = packageEnv(pkg.environmentVariables);
+  const common = { ...(args.length ? { args } : {}), ...(Object.keys(env).length ? { env } : {}), ...(tr.transport === 'http' ? { transport: 'http', http: tr.http } : {}) };
+  const { package: path, commit, module, dir } = g.launch;
+  return {
+    launch: { kind: 'go', module: path, version: commit, ...common },
+    choice: { type: 'go', identifier: path, version: commit, transport: tr.transport, runtime_hint: null, args_n: args.length, args_unfilled: unfilled, env_names: names, oci_digest: null, purl: purlOf('golang', path, commit), go: { module, dir: dir || '.' } },
+    commit,
+  };
+}
+
+/**
  * How to run one subject: { status: 'runnable', launch, choice, registry, subdir } or { status: 'skipped', detail }.
  * Never throws; a fetch that failed gives rate_limited or upstream_error (retryable).
  */
-export async function resolveSubject(item, { seed = new Map(), fetch: fetchImpl = globalThis.fetch, base = REGISTRY_BASE, chains } = {}) {
+export async function resolveSubject(item, { seed = new Map(), fetch: fetchImpl = globalThis.fetch, base = REGISTRY_BASE, chains, ghToken = process.env.GH_TOKEN || null } = {}) {
   const out = { status: 'skipped', detail: null, registry: null, choice: null, launch: null, subdir: null, seed_packages: 0, candidates: [] };
   if (!item.repo) { out.detail = 'bad_subject'; return out; }
   const seedPkgs = seed.get(item.repo.toLowerCase()) || [];
@@ -1057,6 +1090,16 @@ export async function resolveSubject(item, { seed = new Map(), fetch: fetchImpl 
     if (!cands.length) out.detail = own.some(({ server }) => Array.isArray(server.remotes) && server.remotes.length) ? 'remote_only' : entries.length > own.length ? 'unverified_registry_entry' : lookup.full ? 'registry_lookup_truncated' : 'no_package';
     else out.detail = DETAIL_ORDER.find((d) => details.includes(d)) || 'unsupported_package';
     if (own.length) out.registry = { name: own[0].server.name, version: typeof own[0].server.version === 'string' ? own[0].server.version.slice(0, 64) : null, entries: own.length, transports: [], remotes: Array.isArray(own[0].server.remotes) ? own[0].server.remotes.length : 0 };
+    // R-LP-91: no package we can run, but the repository may be a Go module whose main package we can build at its commit.
+    // The package path is chosen from the repository at that commit (corpus/go-entry.mjs), never a guess: the module root if
+    // it is a main package, else the one cmd/ package, else the one named for the repository or its registry name.
+    if (out.detail === 'no_package' || out.detail === 'unsupported_package') {
+      const g = await goLaunchFor(item, own, { fetch: fetchImpl, token: ghToken });
+      if (g.launch) {
+        out.status = 'runnable'; out.detail = null; out.launch = g.launch; out.commit = g.commit;
+        out.choice = { ...g.choice, matched_by: 'repository', verified_by: 'source_commit' };
+      } else if (g.detail) { out.detail = g.detail; if (g.why) out.transport_refused = [{ identifier: String(g.identifier || '').slice(0, 200), type: 'streamable-http', why: g.why }]; }
+    }
   } catch (e) {
     out.status = 'skipped';
     // R-LP-76: a detail code of ours stands (an outage, a rate limit, a refused query); an exception without one is a bug
@@ -1105,14 +1148,14 @@ export const subjectTimeout = (n, reserveS = 0) => Math.max(SUBJECT_TIMEOUT_MIN_
  * The shard plan. validateTarget is the sandbox's own check of one target (mcp-surface-corpus src/targets.mjs): a
  * target it refuses becomes a launch_invalid skip instead of stopping the whole list.
  */
-export async function planShard({ inputs, seed = new Map(), fetch: fetchImpl = globalThis.fetch, validateTarget = () => {}, marker = newMarker(), now = () => new Date(), clock = () => Date.now(), base = REGISTRY_BASE, fuzz = false }) {
+export async function planShard({ inputs, seed = new Map(), fetch: fetchImpl = globalThis.fetch, validateTarget = () => {}, marker = newMarker(), now = () => new Date(), clock = () => Date.now(), base = REGISTRY_BASE, fuzz = false, ghToken = process.env.GH_TOKEN || null }) {
   const items = [];
   for (const it of inputs.items) {
     const t0 = clock();
-    const r = await resolveSubject(it, { seed, fetch: fetchImpl, base });
+    const r = await resolveSubject(it, { seed, fetch: fetchImpl, base, ghToken });
     const x = { index: it.index, subject: it.subject, repo: it.repo, run_key: it.run_key, fence: it.fence, target_id: null, target: null, resolution: r, resolve_ms: clock() - t0 };
     if (r.status === 'runnable') {
-      const target = { id: targetId(it.index), repo: it.repo, ...(it.sha ? { commit: it.sha } : { ref: 'HEAD' }), ...(r.subdir ? { subdir: r.subdir } : {}), ...(r.registry && REGISTRY_NAME.test(r.registry.name) ? { registry: r.registry.name } : {}), launch: r.launch };
+      const target = { id: targetId(it.index), repo: it.repo, ...(it.sha ? { commit: it.sha } : r.commit ? { commit: r.commit } : { ref: 'HEAD' }), ...(r.subdir ? { subdir: r.subdir } : {}), ...(r.registry && REGISTRY_NAME.test(r.registry.name) ? { registry: r.registry.name } : {}), launch: r.launch };
       try { validateTarget(target, it.index); x.target_id = target.id; x.target = target; } catch (e) {
         r.status = 'skipped'; r.detail = 'launch_invalid'; r.invalid = String((e && e.message) || e).slice(0, 200);
       }
@@ -2691,7 +2734,7 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     const { validateTarget } = await import(pathToFileURL(join(resolve(opt['--msc']), 'src', 'targets.mjs')).href);
     const images = JSON.parse(readFileSync(join(resolve(opt['--msc']), 'images.json'), 'utf8'));
     const seed = loadSeed(opt['--seed']);
-    const plan = await planShard({ inputs, seed, fetch: fetchImpl, validateTarget, fuzz: env.LIVE_PROBE_FUZZ === 'on' });
+    const plan = await planShard({ inputs, seed, fetch: fetchImpl, validateTarget, fuzz: env.LIVE_PROBE_FUZZ === 'on', ghToken: env.GH_TOKEN || null });
     const lists = targetLists(plan, { node24Image: images.node24 });
     mkdirSync(work, { recursive: true });
     writeFileSync(join(work, 'plan.json'), json(plan));
