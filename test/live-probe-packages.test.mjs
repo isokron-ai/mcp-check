@@ -96,7 +96,7 @@ test('R-LP-55: a crate builds after the other subjects, in a list of its own, wi
 test('R-LP-55 mutation check: without the build list a crate would run among the subjects on a subject\'s time limit', async () => {
   const servers = [server('io.github.a/two', 'a/two', [crate('two')])];
   const inputs = LP.parseInputs({ shardId: 's', attemptId: 'a1', items: items(['a/two']) });
-  const M = await mutant("export const isBuild = (launch) => !!(launch && launch.kind === 'cargo');", 'export const isBuild = () => false;');
+  const M = await mutant("export const isBuild = (launch) => !!(launch && (launch.kind === 'cargo' || launch.kind === 'go'));", 'export const isBuild = () => false;');
   const plan = await M.planShard({ inputs, fetch: registry(servers) });
   const lists = M.targetLists(plan, { node24Image: NODE24 });
   assert.deepEqual([lists.subjects.targets.length, lists.builds.targets.length], [1, 0]);

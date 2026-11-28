@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 
-export const ALLOWED_HOSTS = Object.freeze(['proxy.golang.org', 'sum.golang.org']);
+export const ALLOWED_HOSTS = Object.freeze(['proxy.golang.org', 'sum.golang.org', 'storage.googleapis.com']);
 const readJson = (f) => { try { return JSON.parse(readFileSync(f, 'utf8')); } catch { return null; } };
 
 /** One subject's verdict from the plan item, the driver record of its build, and its bundle's result. */

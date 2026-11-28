@@ -254,9 +254,9 @@ test('R-LP-95: the proof check fails a Go subject that was not planned at its co
   const ok = { install: { kind: 'go', ok: true, steps: [{ name: 'install', exit: 0 }], egress: [{ host: 'proxy.golang.org', allowed: true }, { host: 'sum.golang.org', allowed: true }], egress_refused: 0 } };
   const result = { status: 'skipped', detail: 'start_needs_config', fault: 'tool' };
   assert.deepEqual(PROOF.judge(item, ok, result), []);
-  assert.deepEqual(PROOF.ALLOWED_HOSTS, ['proxy.golang.org', 'sum.golang.org'], 'storage.googleapis.com only when a proof shows a build needs it');
+  assert.deepEqual(PROOF.ALLOWED_HOSTS, ['proxy.golang.org', 'sum.golang.org', 'storage.googleapis.com'], 'the proxy redirects downloads to the storage host');
   const withHost = (h) => ({ install: { ...ok.install, egress: [...ok.install.egress, { host: h, allowed: true }] } });
-  assert.match(PROOF.judge(item, withHost('storage.googleapis.com'), result).join(), /egress to storage\.googleapis\.com/);
+  assert.match(PROOF.judge(item, withHost('evil.example'), result).join(), /egress to evil\.example/);
   assert.match(PROOF.judge(item, withHost('github.com'), result).join(), /egress to github\.com/);
   assert.match(PROOF.judge(item, { install: { ...ok.install, egress_refused: 1 } }, result).join(), /refused/);
   assert.match(PROOF.judge(item, { install: { ...ok.install, ok: false } }, result).join(), /did not succeed/);
@@ -267,8 +267,8 @@ test('R-LP-95: the proof check fails a Go subject that was not planned at its co
   assert.match(PROOF.judge(item, ok, { status: 'skipped', detail: 'start_failed', fault: 'subject' }).join(), /blamed on the server/);
   assert.match(PROOF.judge(item, ok, null).join(), /no bundle result/);
   // The mutation check: with the allowlist widened to the storage host the same record passes.
-  const M = await mutant("export const ALLOWED_HOSTS = Object.freeze(['proxy.golang.org', 'sum.golang.org']);", "export const ALLOWED_HOSTS = Object.freeze(['proxy.golang.org', 'sum.golang.org', 'storage.googleapis.com']);", 'go-proof-check.mjs');
-  assert.deepEqual(M.judge(item, withHost('storage.googleapis.com'), result), []);
+  const M = await mutant("export const ALLOWED_HOSTS = Object.freeze(['proxy.golang.org', 'sum.golang.org', 'storage.googleapis.com']);", "export const ALLOWED_HOSTS = Object.freeze(['proxy.golang.org', 'sum.golang.org', 'storage.googleapis.com', 'evil.example']);", 'go-proof-check.mjs');
+  assert.deepEqual(M.judge(item, withHost('evil.example'), result), []);
 });
 
 test('R-LP-95: the proof workflow runs on a pull request, in the sandbox, with no secret and no oracle or fuzz stage, one pinned commit of the sandbox everywhere, and its fixture names both Go repositories', () => {
