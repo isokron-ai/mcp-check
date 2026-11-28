@@ -31,6 +31,16 @@ export const ORACLE_BUDGET_MS = 150_000;
 export const RESERVE_MS = 75_000;
 export const MIN_BUDGET_MS = 20_000;
 export const FUZZ_MIN_BUDGET_MS = 20_000;
+/**
+ * The sandbox driver's writableWork option (mcp-surface-corpus #17, R-ORC-15): each package kind's server (npm, PyPI, Go,
+ * crates, NuGet, MCP bundles) gets a writable layer of its own per probe, an overlay over its read-only work volume at
+ * /work and a /data tmpfs, removed after the probe. A server that writes into its own install or to /data then starts
+ * instead of failing as start_env_limited. The work volume itself is never written, and a layer the sandbox cannot make
+ * is recorded and the probe runs read-only, as before: that is our failure, never the server's. The sandbox's driver
+ * refuses the option unless Docker's volumes are on the guard's capped filesystem, and this driver refuses a sandbox
+ * that has no such option: either fails the shard as a harness error, never a subject.
+ */
+export const WRITABLE_WORK = true;
 const TARGET_RE = /^s[0-9]{3}$/;
 /** The driver's server container name: surface-<run>-<target>-s<n> (mcp-surface-corpus src/docker.mjs name()). */
 const SERVER_NAME_RE = /^surface-[0-9a-f]{12}-(s[0-9]{3})-s[0-9]+$/;
@@ -169,9 +179,12 @@ export async function main(argv = process.argv.slice(2)) {
   const o = parse(argv);
   const msc = resolve(o.msc);
   const load = (p) => import(pathToFileURL(join(msc, p)).href);
-  const [{ main: runShard }, { probeStdio, listed }, { Docker }, { takeTrace }, { loadRunscConfig }] = await Promise.all([
+  const [{ main: runShard, writableWorkOption }, { probeStdio, listed }, { Docker }, { takeTrace }, { loadRunscConfig }] = await Promise.all([
     load('bin/run-shard.mjs'), load('sandbox/probe.mjs'), load('src/docker.mjs'), load('src/sandbox-run.mjs'), load('src/runsc.mjs'),
   ]);
+  // An older sandbox ignores an option it does not know: the servers would run on the read-only volume while the lane
+  // says they had a layer. Stop before any target instead (R-ORC-15).
+  if (WRITABLE_WORK && typeof writableWorkOption !== 'function') throw new Error('the sandbox at SURFACE_CORPUS_REF has no writableWork option (mcp-surface-corpus #17): not running on a read-only volume unannounced');
   const out = resolve(optionOf(o.rest, '--out'));
   const targetsFile = optionOf(o.rest, '--targets');
   let limits = new Map();
@@ -192,7 +205,7 @@ export async function main(argv = process.argv.slice(2)) {
   const withOracles = oracleProbe({ probe: probeStdio, listed, out, install, pins, starts, limits, takeTrace: trace });
   const probe = o.fuzz === 'on' ? fuzzProbe({ probe: withOracles, listed, out, enabled: true, starts, limits, takeTrace: trace }) : withOracles;
   const reader = readerBundle();
-  try { return await runShard(o.rest, { makeDocker: (x) => new TimedDocker(x), probe, runscConfig: cfg, reader }); } finally { rmSync(reader.dir, { recursive: true, force: true }); }
+  try { return await runShard(o.rest, { makeDocker: (x) => new TimedDocker(x), probe, runscConfig: cfg, reader, writableWork: WRITABLE_WORK }); } finally { rmSync(reader.dir, { recursive: true, force: true }); }
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] || '').href) {

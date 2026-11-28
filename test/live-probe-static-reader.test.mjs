@@ -156,7 +156,7 @@ test('R-LP-77: a subfolder is read as fromGitHub reads it from GitHub: the root 
 test('R-LP-78: the driver hands the sandbox driver this checkout\'s reader bundle, and removes it afterwards', async () => {
   const { main } = await import('../corpus/live-probe-driver.mjs');
   const msc = repo({
-    'bin/run-shard.mjs': 'import { existsSync, readdirSync } from "node:fs";\nimport { join } from "node:path";\nexport async function main(args, opts) { globalThis.__lpRun = { args, id: opts.reader && opts.reader.id, entry: opts.reader && opts.reader.entry, dir: opts.reader && opts.reader.dir, files: opts.reader ? readdirSync(opts.reader.dir).sort() : null }; return 0; }\n',
+    'bin/run-shard.mjs': 'import { existsSync, readdirSync } from "node:fs";\nimport { join } from "node:path";\nexport const writableWorkOption = (w) => w;\nexport async function main(args, opts) { globalThis.__lpRun = { args, id: opts.reader && opts.reader.id, entry: opts.reader && opts.reader.entry, dir: opts.reader && opts.reader.dir, files: opts.reader ? readdirSync(opts.reader.dir).sort() : null }; return 0; }\n',
     'sandbox/probe.mjs': 'export const probeStdio = async () => ({}); export const listed = () => false;\n',
     'src/docker.mjs': 'export class Docker { constructor() {} labels() { return []; } }\n',
     'src/sandbox-run.mjs': 'export const takeTrace = async () => null;\n',
@@ -171,4 +171,31 @@ test('R-LP-78: the driver hands the sandbox driver this checkout\'s reader bundl
   assert.equal(run.entry, SR.SELF);
   assert.deepEqual(run.files, SR.READER_FILES.concat([SR.SELF]).sort());
   assert.equal(existsSync(run.dir), false, 'the bundle folder is gone after the run');
+});
+
+// A sandbox driver as the tests above stub it, with or without mcp-surface-corpus #17's writableWork option.
+function stubSandbox({ withOption }) {
+  return repo({
+    'bin/run-shard.mjs': (withOption ? 'export const writableWorkOption = (w) => { if (w === true || w === false) return w; throw new Error("bad"); };\n' : '')
+      + 'export async function main(args, opts) { globalThis.__lpWritable = { writableWork: opts.writableWork, reader: !!opts.reader }; return 0; }\n',
+    'sandbox/probe.mjs': 'export const probeStdio = async () => ({}); export const listed = () => false;\n',
+    'src/docker.mjs': 'export class Docker { constructor() {} labels() { return []; } }\n',
+    'src/sandbox-run.mjs': 'export const takeTrace = async () => null;\n',
+    'src/runsc.mjs': 'export const loadRunscConfig = () => ({});\n',
+  });
+}
+
+test('R-ORC-15: the driver runs the sandbox with writableWork true, and stops before any target on a sandbox that has no such option', async () => {
+  const D = await import('../corpus/live-probe-driver.mjs');
+  assert.equal(D.WRITABLE_WORK, true);
+  const out = mkdtempSync(join(tmpdir(), 'mcpc-lp-ww-'));
+  writeFileSync(join(out, 'targets.json'), JSON.stringify({ targets: [] }));
+  const args = (msc) => ['--msc', msc, '--oracles', 'none', '--', '--targets', join(out, 'targets.json'), '--out', out];
+  globalThis.__lpWritable = null;
+  assert.equal(await D.main(args(stubSandbox({ withOption: true }))), 0);
+  assert.deepEqual(globalThis.__lpWritable, { writableWork: true, reader: true }, 'the option goes to the sandbox driver as exactly true');
+  // An older sandbox would ignore it and run every server on the read-only volume: refused, as our own (harness) error.
+  globalThis.__lpWritable = null;
+  await assert.rejects(D.main(args(stubSandbox({ withOption: false }))), /has no writableWork option \(mcp-surface-corpus #17\)/);
+  assert.equal(globalThis.__lpWritable, null, 'the sandbox driver never started');
 });

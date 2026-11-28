@@ -153,7 +153,12 @@ The run is named `shard <shard_id>`.
    [isokron-ai/mcp-surface-corpus](https://github.com/isokron-ai/mcp-surface-corpus) at `SURFACE_CORPUS_REF`, used as
    it is: gVisor (`runsc`) with syscall tracing, user 65534, no capabilities, a read-only root, an install network
    whose only way out is an allowlist proxy to the package registry, a run network with no way out, a DNS logger
-   that answers every name with itself, and the host firewall. Before any target, at that same commit:
+   that answers every name with itself, and the host firewall. The driver runs with its `writableWork` option on
+   (since mcp-surface-corpus 3738f2c, #17; R-ORC-15): each probe of a package kind's server (npm, PyPI, Go, crates,
+   NuGet, MCP bundles) gets a writable layer of its own, an overlay over the read-only work volume at `/work` and a
+   32 MiB `/data` tmpfs, removed after the probe, so a server that writes into its own install or to `/data` starts.
+   The work volume is never written; a layer that cannot be made is recorded and that probe runs read-only, which is
+   our failure, never the server's. Before any target, at that same commit:
    - its reusable `sandbox-conformance.yml` runs as the job `sandbox`, on a runner of its own; the probe job starts
      only when its verdict is `pass`;
    - in the probe job, on the runner that will run the targets, its `sandbox-guard` action installs gVisor and the
