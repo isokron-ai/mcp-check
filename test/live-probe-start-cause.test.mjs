@@ -21,6 +21,8 @@ const tb = (...lines) => ['Traceback (most recent call last):', '  File "/work/v
 const FASTMCP_2X = tb('    from server import main', '    from mcp.server.fastmcp import FastMCP', '    raise ModuleNotFoundError(_MESSAGE, name=__name__)',
   "ModuleNotFoundError: No module named 'mcp.server.fastmcp'. This is mcp 2.x, where FastMCP was renamed to MCPServer (from mcp.server.mcpserver import MCPServer) and other APIs changed");
 const BLOCKCHAIN = { top: ['server', 'blockchain-ai-mcp'], base: ['mcp', 'httpx'], uncapped: ['mcp', 'httpx'], extra_only: [], extras: [] };
+// A name a dependency no longer has, in a dependency the release caps (or of which we know nothing): not ours to tell.
+const IMPORT_GONE = tb('    from server import main', '    from httpx import AsyncHTTPTransportPool', "ImportError: cannot import name 'AsyncHTTPTransportPool' from 'httpx'");
 // mcp-weather-server@0.6.1: McpError became MCPError in mcp 2.x.
 const MCPERROR = tb('    from mcp import McpError', "ImportError: cannot import name 'McpError' from 'mcp' (/work/venv/lib/python3.13/site-packages/mcp/__init__.py). Did you mean: 'MCPError'?");
 const WEATHER = { top: ['mcp-weather-server'], base: ['mcp', 'httpx'], uncapped: ['mcp'], extra_only: [], extras: [] };
@@ -157,9 +159,11 @@ test('R-LP-62: a dependency that changed after the release is start_dependency_d
   assert.equal(detail(FASTMCP_2X, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp', BLOCKCHAIN)), 'start_dependency_drift');
   assert.equal(detail(MCPERROR, py('mcp-weather-server', '0.6.1', 'mcp_weather_server', WEATHER)), 'start_dependency_drift');
   // Drift needs the dependency declared with no upper bound; a capped one, or no facts at all, is not ours to tell:
-  // start_env_limited, still never the server's.
-  assert.equal(detail(FASTMCP_2X, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp', { ...BLOCKCHAIN, uncapped: ['httpx'] })), 'start_env_limited');
-  assert.equal(detail(FASTMCP_2X, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp')), 'start_env_limited');
+  // start_env_limited, still never the server's. The SDK's own "This is mcp 2.x" is drift whatever the facts (R-LP-81).
+  assert.equal(detail(IMPORT_GONE, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp', { ...BLOCKCHAIN, uncapped: ['mcp'] })), 'start_env_limited');
+  assert.equal(detail(IMPORT_GONE, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp')), 'start_env_limited');
+  assert.equal(detail(FASTMCP_2X, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp', { ...BLOCKCHAIN, uncapped: ['httpx'] })), 'start_dependency_drift');
+  assert.equal(detail(FASTMCP_2X, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp')), 'start_dependency_drift');
   // Node: an export a dependency no longer has.
   const esm = "file:///work/pkg/dist/index.js:1\nimport { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';\n         ^^^^^^^^^\nSyntaxError: The requested module '@modelcontextprotocol/sdk/server/mcp.js' does not provide an export named 'McpServer'\n    at ModuleJob._instantiate (node:internal/modules/esm/module_job:180:21)";
   assert.equal(detail(esm, { launch: { kind: 'npm', package: 'x-mcp' }, argsUnfilled: 0 }), 'start_dependency_drift');
@@ -204,7 +208,8 @@ test('R-LP-64: a server that went to the network is start_needs_network whether 
 test('R-LP-65: mutation check: with a start rule switched off its fixture gets another detail, and with all of them off every fixture is blamed on the server again', () => {
   const cases = [...NOT_THE_SERVER,
     ['NETWORK', tb('httpx.ConnectError: [Errno -3] Temporary failure in name resolution'), py('x-mcp', '1', 'x-mcp'), 'start_needs_network', 'network'],
-    ['FASTMCP_NO_FACTS', FASTMCP_2X, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp'), 'start_env_limited', 'import'],
+    ['IMPORT_NO_FACTS', IMPORT_GONE, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp'), 'start_env_limited', 'import'],
+    ['MCP2_TEXT_NO_FACTS', FASTMCP_2X, py('blockchain-ai-mcp', '1.0.12', 'blockchain_ai_mcp'), 'start_dependency_drift', 'drift'],
     ['ENV_KEYERROR', ENV_KEYERROR, py('gh-issues-mcp', '0.4.0', 'gh-issues-mcp', GH_ISSUES), 'start_needs_config', 'config'],
     ['PYDANTIC', PYDANTIC, py('acme-crm-mcp', '1.2.0', 'acme-crm-mcp', ACME), 'start_needs_config', 'config'],
     ['DEP_SYNTAX', DEP_SYNTAX, py('acme-crm-mcp', '1.2.0', 'acme-crm-mcp', ACME), 'start_env_limited', 'frame'],
@@ -312,7 +317,7 @@ test('R-LP-66: a PyPI launch installs the extra that holds the server (mcp, serv
   // mcp-surface-corpus 4c16b58 (R-SBX-49 is after it).
   const y = readFileSync(new URL('../.github/workflows/live-probe.yml', import.meta.url), 'utf8');
   const pin = /\n  SURFACE_CORPUS_REF: '([0-9a-f]{40})'\n/.exec(y)[1];
-  if (pin === '4c16b586e8e5886acb098285b6ec405fd4db4ac7') assert.equal(LP.EMIT_PYPI_EXTRAS, false);
+  assert.equal(LP.EMIT_PYPI_EXTRAS, pin !== '4c16b586e8e5886acb098285b6ec405fd4db4ac7', 'on exactly when the pinned sandbox takes launch.extras');
 });
 
 test('R-LP-67: an HTTP-mode server\'s own exit comes from the sandbox\'s container record, only with its output read back', () => {

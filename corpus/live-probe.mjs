@@ -224,10 +224,11 @@ export const FIELDS = Object.freeze({
   static_vs_live_agreement: 'object', commit_sha: 'string', commit_date: 'timestamp',
 });
 /**
- * PyPI launches name the extras that hold the server (`pkg[mcp]`, R-LP-66): on only once SURFACE_CORPUS_REF pins a
- * sandbox whose target format takes `launch.extras` (mcp-surface-corpus R-SBX-49); an older one refuses the field.
+ * PyPI launches name the extras that hold the server (`pkg[mcp]`, R-LP-66): on since SURFACE_CORPUS_REF pins a sandbox
+ * whose target format takes `launch.extras` (mcp-surface-corpus R-SBX-49, in 4504c0b; an older one refuses the field).
+ * R-LP-84: about 10 servers keep the MCP SDK in their `mcp` extra.
  */
-export const EMIT_PYPI_EXTRAS = false;
+export const EMIT_PYPI_EXTRAS = true;
 /** Extras a release declares that hold an MCP server or its command line: installed with it, in this order. */
 export const SERVER_EXTRAS = Object.freeze(['mcp', 'server', 'cli']);
 export function serverExtras(deps) {
@@ -254,6 +255,12 @@ export const TOOL_LIST_FIELDS = Object.freeze({ tool_count: 'integer', tool_list
  * needs tool-qa's ingest to pin a registry that declares it (INGEST_REF; else the observation is an undeclared_field).
  */
 export const EMIT_TOOL_NAMES_FIELD = false;
+/**
+ * R-LP-81: launch_retry (mcp-results, planned): the change a retry made to the plan's launch when its run is the item's
+ * (mcp<2, a subcommand). Written only while EMIT_LAUNCH_RETRY_FIELD is on, once tool-qa's pinned registry declares it.
+ */
+export const EMIT_LAUNCH_RETRY_FIELD = false;
+export const LAUNCH_RETRY_FIELDS = Object.freeze({ launch_retry: 'object' });
 export const TOOL_NAMES_FIELDS = Object.freeze({ tool_names_sha256: 'hash' });
 /**
  * The fuzz stage's fields (corpus/FUZZ.md): written only while EMIT_FUZZ_FIELDS is on, which needs the mcp-results
@@ -802,15 +809,51 @@ export function packageEnv(list) {
   return { env, names: names.slice(0, 100) };
 }
 
-/** The transport block for the sandbox target list, or a detail code. */
-export function transportOf(t) {
+/**
+ * The transport block for the sandbox target list, or { detail: 'unsupported_transport', why } (R-LP-86). A streamable
+ * HTTP URL may name the package's own variables (`http://localhost:{port}/mcp`): each is filled from `vars`, the
+ * declared defaults and values of its env names and arguments, never a value we invent. why: sse (the legacy transport,
+ * which the sandbox's probe does not speak), other (another type), no_url, url_variable (a variable nothing declares),
+ * not_local (a host that is not the server's own loopback), no_port or port_range (none, or one under 1024).
+ */
+export function transportOf(t, vars = {}) {
   const type = isObj(t) && typeof t.type === 'string' ? t.type : 'stdio';
   if (type === 'stdio') return { transport: 'stdio' };
-  if (type !== 'streamable-http') return { detail: 'unsupported_transport' };
-  const m = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\])(?::([0-9]{2,5}))?(\/[A-Za-z0-9._~/-]{0,200})?$/.exec(String(t.url || ''));
-  const port = m && m[1] ? Number(m[1]) : null;
-  if (!m || !port || port < 1024 || port > 65535) return { detail: 'unsupported_transport' };
+  if (type === 'sse') return { detail: 'unsupported_transport', why: 'sse' };
+  if (type !== 'streamable-http') return { detail: 'unsupported_transport', why: 'other' };
+  const raw = typeof t.url === 'string' ? t.url.slice(0, 300) : '';
+  if (!raw) return { detail: 'unsupported_transport', why: 'no_url' };
+  let unknown = false;
+  const url = raw.replace(/\{([A-Za-z_][A-Za-z0-9_-]{0,80})\}/g, (all, n) => {
+    const v = Object.prototype.hasOwnProperty.call(vars, n) ? vars[n] : null;
+    if (typeof v === 'string' && /^[A-Za-z0-9._~-]{1,100}$/.test(v)) return v;
+    unknown = true; return all;
+  });
+  if (unknown) return { detail: 'unsupported_transport', why: 'url_variable' };
+  const m = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::\])(?::([0-9]{2,5}))?(\/[A-Za-z0-9._~/-]{0,200})?$/.exec(url);
+  if (!m) return { detail: 'unsupported_transport', why: 'not_local' };
+  const port = m[1] ? Number(m[1]) : null;
+  if (!port) return { detail: 'unsupported_transport', why: 'no_port' };
+  if (port < 1024 || port > 65535) return { detail: 'unsupported_transport', why: 'port_range' };
   return { transport: 'http', http: { port, path: m[2] || '/mcp' } };
+}
+
+/**
+ * The variables a transport URL may name: a package's declared env names, each with the default packageEnv passes to
+ * the server, and its named arguments (`--port` is `port`) with the value or default packageArgs passes; nothing else.
+ */
+export function transportVars(pkg) {
+  const vars = {};
+  const put = (n, v) => { if (typeof n === 'string' && typeof v === 'string' && !Object.prototype.hasOwnProperty.call(vars, n)) vars[n] = v; };
+  // An env name's declared default, as packageEnv passes it to the server (never a value it would not pass).
+  for (const e of Array.isArray(pkg.environmentVariables) ? pkg.environmentVariables.slice(0, 100) : []) if (isObj(e) && !e.isSecret) put(e.name, e.default);
+  for (const a of Array.isArray(pkg.packageArguments) ? pkg.packageArguments.slice(0, 40) : []) {
+    if (!isObj(a)) continue;
+    const v = typeof a.value === 'string' ? a.value : a.default;
+    if (a.type === 'named' && typeof a.name === 'string') put(a.name.replace(/^-{1,2}|=$/g, ''), v);
+    if (typeof a.valueHint === 'string') put(a.valueHint, v);
+  }
+  return vars;
 }
 
 /** A package URL for the chosen package (purl spec), or null. */
@@ -833,7 +876,7 @@ export async function launchFor(pkg, { fetch: fetchImpl = globalThis.fetch } = {
   if (!['npm', 'pypi', 'oci', 'cargo', 'nuget', 'mcpb'].includes(type)) return { detail: 'unsupported_package' };
   const base = typeof pkg.registryBaseUrl === 'string' ? pkg.registryBaseUrl : null;
   if (base && type !== 'oci' && type !== 'mcpb' && !DEFAULT_BASE[type].includes(base)) return { detail: 'private_registry' };
-  const tr = transportOf(pkg.transport);
+  const tr = transportOf(pkg.transport, transportVars(pkg));
   if (tr.detail) return tr;
   const { args, unfilled } = packageArgs(pkg.packageArguments);
   const { env, names } = packageEnv(pkg.environmentVariables);
@@ -863,7 +906,7 @@ export async function launchFor(pkg, { fetch: fetchImpl = globalThis.fetch } = {
   if (type === 'mcpb') {
     // R-LP-72: the bundle is read here as data (corpus/mcpb.mjs) and unpacked in the sandbox (mcp-surface-corpus launchPlan,
     // kind mcpb) from exactly the bytes read, its sha256 pinned; it runs in the image its runtime needs.
-    if (tr.transport !== 'stdio') return { detail: 'unsupported_transport' };
+    if (tr.transport !== 'stdio') return { detail: 'unsupported_transport', why: 'mcpb_http' };
     const { launch, info } = await mcpbLaunch(pkg, { fetch: fetchImpl, transportArgs: args, env });
     choice.version = typeof pkg.version === 'string' && SAFE_VERSION.test(pkg.version) ? pkg.version : 'latest';
     choice.mcpb = info;
@@ -955,6 +998,8 @@ export async function resolveSubject(item, { seed = new Map(), fetch: fetchImpl 
         // subject's (its namespace). Anyone can publish an entry naming someone else's repository with a dead bundle URL.
         if (SUBJECT_RESOLVE_DETAILS.includes(r.detail) && !(c.entry && c.entry.namespace)) details.push(c.entry && !c.entry.seed ? 'unverified_registry_entry' : 'bundle_unowned');
         else details.push(r.detail);
+        // Which transport we could not run, and why (R-LP-86): kept in raw/resolution.json.
+        if (r.detail === 'unsupported_transport') out.transport_refused = [...(out.transport_refused || []), { identifier: String(c.pkg.identifier || '').slice(0, 200), type: String((c.pkg.transport && c.pkg.transport.type) || 'stdio').slice(0, 30), why: r.why || null }].slice(0, 8);
         continue;
       }
       // An entry that matched on its repository URL alone is anyone's claim: its package must point back to the repo.
@@ -979,15 +1024,23 @@ export async function resolveSubject(item, { seed = new Map(), fetch: fetchImpl 
       out.status = 'runnable'; out.launch = r.launch; out.choice = { ...r.choice, matched_by: c.by, verified_by: verifiedBy };
       // A PyPI launch runs the console script the wheel declares, not a guess from the package name (R-LP-48).
       if (out.launch.kind === 'pypi' && !out.launch.entry) {
-        const e = await pypiEntry(out.launch.package, out.launch.version, { fetch: fetchImpl });
+        const e = await pypiEntry(out.launch.package, out.launch.version, { fetch: fetchImpl, args: out.launch.args || [] });
         // The sandbox takes at most 40 args: a module launch that would not fit stays on the guess.
         const fits = !e.args_prefix || e.args_prefix.length + (out.launch.args || []).length <= 40;
-        if (e.entry && fits) out.launch = { ...out.launch, entry: e.entry, ...(e.args_prefix ? { args: [...e.args_prefix, ...(out.launch.args || [])] } : {}) };
+        if (e.entry && fits) {
+          // R-LP-82: an entry the registry's first package argument named takes that argument.
+          const rest = (out.launch.args || []).slice(Number.isInteger(e.args_drop) ? e.args_drop : 0);
+          const args = [...(e.args_prefix || []), ...rest];
+          const { args: _a, ...l } = out.launch;
+          out.launch = { ...l, entry: e.entry, ...(args.length ? { args } : {}) };
+        }
         out.choice.entry_source = e.entry && !fits ? 'too_many_args' : e.entry_source;
         out.choice.entry_wheel = e.wheel || null;
         out.choice.entry = (fits && e.entry) || null;
         // What the release declares and ships: failureDetail tells the server's own modules from its dependencies (R-LP-61).
         if (e.deps) out.choice.pydeps = e.deps;
+        // What PyPI said of the release (R-LP-90): found, and how many files it has; failureDetail needs both.
+        if (isObj(e.release)) out.choice.pypi_release = e.release;
         // The extra that holds the MCP server (or its CLI's dependencies) installs with the package (R-LP-66).
         const extras = EMIT_PYPI_EXTRAS ? serverExtras(e.deps) : [];
         if (extras.length) { out.launch = { ...out.launch, extras }; out.choice.extras = extras; }
@@ -1216,7 +1269,45 @@ export function networkEvents(records, cap = 200) {
 }
 
 /** Package-level install errors: the package, its version or its launcher is not there (the server's own publishing). */
-const PACKAGE_ERROR = /\bE404\b|\bETARGET\b|No matching distribution|declares no bin/;
+/** Signs that pip or npm could not reach the index properly (our proxy, a name lookup, TLS, a time-out). */
+const PIP_NOT_THE_PACKAGE = /Retrying \(Retry\(|ProxyError|SSLError|ConnectionError|Max retries exceeded|Temporary failure in name resolution|Name or service not known|Read timed out|timed out/i;
+const NPM_NOT_THE_PACKAGE = /\b(?:ECONNRESET|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|ECONNREFUSED|EPROXY|ERR_SOCKET_TIMEOUT|UNABLE_TO_GET_ISSUER_CERT|SELF_SIGNED_CERT_IN_CHAIN)\b|socket hang up|npm error network/i;
+/** pip's word that a release exists for other Pythons or platforms only: no defect of the package. */
+const PIP_PLATFORM = /require a different python version|Requires-Python|is not a supported wheel|not a supported wheel on this platform/i;
+const escRe = (x) => String(x).replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+/**
+ * R-LP-90: an npm or PyPI install failure is the package's own (install_failed, subject) only on the installer's word
+ * about this very package, for a registry entry in the subject's namespace (owned), with no sign of trouble reaching
+ * the index, as cargo and NuGet (R-LP-56, R-LP-58). PyPI: "No matching distribution found for <the package>" (PEP 503
+ * names), and the planner's PyPI JSON showed the release missing or with no file at all; a release for other Pythons or
+ * platforms only is unsupported_platform; a dependency with no distribution, a network retry, anything else is ours.
+ * npm: E404 for the package's own registry URL, or ETARGET for its own name; our entry helper's "declares no bin" is
+ * entry_unresolved (our reading of package.json). Returns a detail.
+ */
+export function packageInstallEvidence(kind, text, { launch = null, owned = false, release = null } = {}) {
+  const t = String(text || '');
+  const pkg = isObj(launch) && typeof launch.package === 'string' ? launch.package : null;
+  if (kind === 'pypi') {
+    if (PIP_PLATFORM.test(t)) return 'unsupported_platform';
+    if (!pkg || PIP_NOT_THE_PACKAGE.test(t)) return 'install_build_failed';
+    const named = [...t.matchAll(/No matching distribution found for ([A-Za-z0-9][A-Za-z0-9._-]{0,120})/g)].map((m) => normDist(m[1]));
+    const own = named.length > 0 && named.every((n) => n === normDist(pkg));
+    const gone = isObj(release) && (release.found === false || release.files === 0);
+    return own && owned && gone ? 'install_failed' : 'install_build_failed';
+  }
+  if (kind === 'npm') {
+    if (/declares no bin|has no bin of that name/.test(t)) return 'entry_unresolved';
+    if (!pkg || NPM_NOT_THE_PACKAGE.test(t)) return 'install_build_failed';
+    const url = 'https://registry\\.npmjs\\.org/' + escRe(pkg.startsWith('@') ? pkg.replace('/', '%2f') : pkg);
+    const e404 = /\bE404\b/.test(t) && new RegExp('404 Not Found - GET ' + url + '(?:\\s|$)', 'i').test(t);
+    const etarget = /\bETARGET\b/.test(t) && new RegExp('No matching version found for ' + escRe(pkg) + '@', 'i').test(t);
+    return (e404 || etarget) && owned ? 'install_failed' : 'install_build_failed';
+  }
+  return 'install_build_failed';
+}
+/** npm's own refusal of a package for another platform (EBADPLATFORM, `notsup`). */
+const NPM_PLATFORM = /\bEBADPLATFORM\b|\bnotsup\b[^\n]{0,40}\b(?:Unsupported platform|Valid (?:os|cpu|libc))\b/;
 /**
  * Stderr that says the server needs configuration (R-LP-44): a config file missing or unreadable, a kubeconfig or
  * current-context, --config, a usage block, a missing or required argument, option, flag or environment variable, or
@@ -1640,7 +1731,7 @@ function listDetail(p) {
  * Our sandbox's limits, another platform, the network, extras and dependency drift are told apart before any crash
  * is blamed (R-LP-59..65).
  */
-export function failureDetail(rec, bare, envp, { deadlineHit = false, records = [], stepsLog = null, launch = null, argsUnfilled = null, pydeps = null, owned = false, crashNotEvidence = false } = {}) {
+export function failureDetail(rec, bare, envp, { deadlineHit = false, records = [], stepsLog = null, launch = null, argsUnfilled = null, pydeps = null, owned = false, crashNotEvidence = false, entryGuess = false, pypiRelease = null } = {}) {
   if (!rec) return deadlineHit ? 'shard_deadline' : 'harness_error';
   if (rec.excluded) return 'sandbox_evidence_missing';
   const inst = rec.install;
@@ -1656,6 +1747,9 @@ export function failureDetail(rec, bare, envp, { deadlineHit = false, records = 
     const text = installText(inst, stepsLog);
     if (failed.some((s) => s.exit === 137 || s.exit === 124) || OOM_TEXT.test(text)) return 'install_resource_limit';
     if (refusedCount(inst) > 0) return 'install_blocked';
+    // R-LP-86: npm refused a package built for another OS, CPU or libc (package.json `os`/`cpu`/`libc`): we run Linux on
+    // amd64 only; that is no fault of the package.
+    if (inst.kind === 'npm' && NPM_PLATFORM.test(text)) return 'unsupported_platform';
     if (inst.kind === 'cargo') {
       // Only cargo's own words before any build, or our entry helper's answer, can be the crate's (R-LP-54).
       const entry = failed.find((s) => s.name === 'entry');
@@ -1678,8 +1772,7 @@ export function failureDetail(rec, bare, envp, { deadlineHit = false, records = 
       // The CLI's word counts against the subject only when the registry entry is the subject's (R-LP-56, R-LP-58).
       return ev ? (owned ? ev : 'package_error_unowned') : 'install_build_failed';
     }
-    if (PACKAGE_ERROR.test(text)) return 'install_failed';
-    return 'install_build_failed';
+    return packageInstallEvidence(inst.kind, text, { launch, owned, release: pypiRelease });
   }
   const p = envp || bare;
   if (!p) return rec.timed_out ? 'start_timeout' : 'harness_error';
@@ -1696,7 +1789,8 @@ export function failureDetail(rec, bare, envp, { deadlineHit = false, records = 
   // venv/bin/<package> guess gives), 137 a kill: none is the server's own exit (R-LP-39).
   const own = Number.isInteger(exit) && exit !== 0 && ![125, 126, 127, 137].includes(exit) && !signal;
   // A PyPI launch with no entry runs venv/bin/<package name>, a guess: the console script often has another name.
-  const guess = !isObj(launch) || !launch.kind || (launch.kind === 'pypi' && !launch.entry);
+  // A lone console script with no server signal is our pick too (R-LP-82): run, but never evidence.
+  const guess = !isObj(launch) || !launch.kind || (launch.kind === 'pypi' && (!launch.entry || entryGuess));
   const sound = own && argsUnfilled === 0 && !guess;
   // R-LP-58: a .NET tool built for an older runtime ran rolled forward onto the sandbox's .NET 10; R-LP-74: a bundle that
   // does not run here as shipped (its manifest does not list linux, it is python or uv on an environment we rebuilt, or
@@ -1715,7 +1809,8 @@ export function failureDetail(rec, bare, envp, { deadlineHit = false, records = 
   // tell; only the server's own module can be its crash (R-LP-61, R-LP-62).
   const imp = importCause(failedImport(err), { pydeps, pkg: isObj(launch) ? launch.package : null, err, installedExtras: isObj(launch) && Array.isArray(launch.extras) ? launch.extras : [] });
   if (on('extra') && (EXTRA_HINT.test(err) || imp === 'extra')) return 'start_needs_extra';
-  if (on('drift') && imp === 'drift') return 'start_dependency_drift';
+  // R-LP-81: the MCP SDK's own word that a 1.x server got 2.x is drift, whatever the import looked like.
+  if (on('drift') && (imp === 'drift' || MCP2_TEXT.test(err))) return 'start_dependency_drift';
   if (on('import') && imp === 'env') return 'start_env_limited';
   // The server's own packaging (R-LP-68): its wheel lacks a module of its own package, or its own code imports a module
   // the release neither ships nor declares, and that is not installed. Only with the release's facts in hand.
@@ -1748,6 +1843,14 @@ export function crashNotEvidenceOf(choice, rec) {
 }
 
 /**
+ * R-LP-82: an entry that is our pick, not the publisher's, so its failure is never evidence against the server: a lone
+ * script with no server signal, and the script read from the registry's first package argument (our reading of the
+ * args: a `uvx <package> <args>` launch passes them to the package's own script).
+ */
+export const ENTRY_GUESS_SOURCES = Object.freeze(['lone_script', 'registry_args']);
+export const entryGuessOf = (choice) => !!(isObj(choice) && ENTRY_GUESS_SOURCES.includes(choice.entry_source));
+
+/**
  * Whether a .NET tool ran on another runtime than it was built for: its entry's target framework is not net10.0 or newer
  * (net8.0, netcoreapp3.1, netstandard2.0, a platform-suffixed or unreadable one, or none recorded). Only a tool built for
  * the sandbox's own runtime runs as shipped (R-LP-58).
@@ -1764,7 +1867,7 @@ export function rolledForward(inst) {
 
 /** One observations line, checked against FIELDS. A value of the wrong type is written as null with why. */
 export function obs(field, value, why) {
-  const type = FIELDS[field] || (EMIT_TOOL_LIST_FIELDS ? TOOL_LIST_FIELDS[field] : undefined) || (EMIT_TOOL_NAMES_FIELD ? TOOL_NAMES_FIELDS[field] : undefined) || (EMIT_ORACLE_FIELDS ? ORACLE_FIELDS[field] : undefined) || (EMIT_FUZZ_FIELDS ? FUZZ_FIELDS[field] : undefined);
+  const type = FIELDS[field] || (EMIT_TOOL_LIST_FIELDS ? TOOL_LIST_FIELDS[field] : undefined) || (EMIT_TOOL_NAMES_FIELD ? TOOL_NAMES_FIELDS[field] : undefined) || (EMIT_LAUNCH_RETRY_FIELD ? LAUNCH_RETRY_FIELDS[field] : undefined) || (EMIT_ORACLE_FIELDS ? ORACLE_FIELDS[field] : undefined) || (EMIT_FUZZ_FIELDS ? FUZZ_FIELDS[field] : undefined);
   if (!type) throw new Error('not a field of this lane: ' + field);
   const ok = value !== null && value !== undefined && checkType(type, value);
   return JSON.stringify(ok ? { field, value, stage: STAGE } : { field, value: null, why: why || (value === null || value === undefined ? 'not observed' : 'not of the registry type'), stage: STAGE });
@@ -1963,6 +2066,132 @@ export function configStateOf(probe, bare, rec, launch) {
   return used && used.length && used.every((n) => typeof given[n] === 'string') ? 'defaults' : 'dummy';
 }
 
+// ------------------------------------------------------------------ one retry (R-LP-81)
+
+export const RETRY_FORMAT = 'isokron-mcp-check-live-probe-retry/1';
+/** The MCP SDK's own word that a server written for 1.x got 2.x: its message, or the 1.x module 2.x no longer has. */
+const MCP2_TEXT = /\bThis is mcp 2\.x\b|No module named 'mcp\.server\.fastmcp'/;
+
+/** A launch with a retry's change applied: { constraints } added to a PyPI install, { args_prefix } before its args. */
+export function retryLaunch(launch, change) {
+  if (!isObj(launch) || !isObj(change)) return launch;
+  const out = { ...launch };
+  if (Array.isArray(change.constraints)) out.constraints = [...(Array.isArray(launch.constraints) ? launch.constraints : []), ...change.constraints];
+  if (Array.isArray(change.args_prefix)) out.args = [...change.args_prefix, ...(Array.isArray(launch.args) ? launch.args : [])];
+  return out;
+}
+
+/** The subcommands that serve MCP, in the order one is tried (R-LP-83). */
+export const SERVE_SUBCOMMANDS = Object.freeze(['mcp', 'stdio', 'serve', 'server', 'run', 'start']);
+/** A command line's own usage banner: argparse, Click and Typer, commander, and the plain "a subcommand must be given". */
+const USAGE_TEXT = /(?:^|\n)\s*usage:\s|(?:^|\n)Commands:\s*\n|\bsubcommand (?:must be|is required)|\bmissing (?:sub)?command\b|\bthe following arguments are required: (?:command|subcommand|\{)/i;
+
+/**
+ * The subcommand a usage banner lists that serves MCP, or null: a word of SERVE_SUBCOMMANDS that the banner names as a
+ * choice (argparse `{reviews,mcp}`, `<serve|compare>`, a Click/Typer or commander `Commands:` list, `e.g. 'x stdio ...'`).
+ * Never one it does not list.
+ */
+export function serveSubcommand(text) {
+  const t = String(text || '').slice(0, 20000);
+  if (!USAGE_TEXT.test(t)) return null;
+  const listedWords = new Set();
+  for (const m of t.matchAll(/[{<]([A-Za-z0-9_-]+(?:[,|][A-Za-z0-9_-]+)+)[}>]/g)) for (const w of m[1].split(/[,|]/)) listedWords.add(w.toLowerCase());
+  const cmds = /(?:^|\n)\s*(?:Commands|Available commands|Subcommands):\s*\n((?:[ \t]*(?:[│|][ \t]*)?[A-Za-z0-9_-]+(?:[ \t,][^\n]*)?\n?){1,60})/i.exec(t);
+  if (cmds) for (const line of cmds[1].split('\n')) { const w = /^[ \t]*(?:[│|][ \t]*)?([A-Za-z0-9_-]+)/.exec(line); if (w) listedWords.add(w[1].toLowerCase()); }
+  for (const m of t.matchAll(/\be\.g\.?\s*['"`]?[A-Za-z0-9_.-]+\s+([A-Za-z0-9_-]+)/g)) listedWords.add(m[1].toLowerCase());
+  return SERVE_SUBCOMMANDS.find((w) => listedWords.has(w)) || null;
+}
+
+/**
+ * Whether a subject's first run earns one retry with a changed launch, and which: { reason, change } or null. Never a
+ * change of fault: the retry only tests whether the cause we named was the cause. mcp_drift: a PyPI server whose start
+ * failed on an import the MCP SDK's 2.x line no longer has (`mcp.server.fastmcp`, a name or attribute of `mcp`), or on
+ * the SDK's own "This is mcp 2.x" message, while its release declares `mcp` with no upper bound (pip installed today's
+ * newest, long after the release): run again with `mcp<2`. The release-date resolve (pip --uploaded-prior-to, uv
+ * --exclude-newer) needs the sandbox to take it; until then the known cap is the change.
+ */
+export function retryFor(item, { rec, bare, envp } = {}) {
+  const l = isObj(item) && isObj(item.target) ? item.target.launch : null;
+  if (!isObj(l)) return null;
+  return driftRetry(item, l, { rec, bare, envp }) || cliRetry(l, { rec, bare, envp });
+}
+
+function driftRetry(item, l, { rec, bare, envp }) {
+  if (l.kind !== 'pypi') return null;
+  if (listed(envp) || listed(bare) || !isObj(rec) || !isObj(rec.install) || rec.install.ok !== true) return null;
+  const err = [bare, envp].map((p) => (isObj(p) && typeof p.stderr === 'string' ? p.stderr : '')).join('\n');
+  const imp = failedImport(err);
+  const mcpApi = !!imp && imp.runtime === 'python' && imp.kind === 'api' && normDist(imp.module.split('.')[0]) === 'mcp';
+  if (!mcpApi && !MCP2_TEXT.test(err)) return null;
+  const pydeps = isObj(item.resolution) && isObj(item.resolution.choice) ? item.resolution.choice.pydeps : null;
+  // A release that caps mcp cannot have floated to 2.x; one we know nothing about may have.
+  if (isObj(pydeps) && Array.isArray(pydeps.base) && pydeps.base.includes('mcp') && !(Array.isArray(pydeps.uncapped) && pydeps.uncapped.includes('mcp'))) return null;
+  const cons = Array.isArray(l.constraints) ? l.constraints : [];
+  if (cons.length >= 10 || cons.some((c) => /^mcp\s*[<>=~!]/i.test(String(c)))) return null;
+  return { reason: 'mcp_drift', change: { constraints: ['mcp<2'] } };
+}
+
+/**
+ * R-LP-83: cli_subcommand. A PyPI or npm entry that is a command line with subcommands printed its usage and exited
+ * (nothing tells us which subcommand serves MCP): when the banner lists one of SERVE_SUBCOMMANDS, run again once with it
+ * first. Never a subcommand the banner does not list, and not when the arguments already begin with one.
+ */
+function cliRetry(l, { rec, bare, envp }) {
+  if (!['pypi', 'npm'].includes(l.kind)) return null;
+  if (listed(envp) || listed(bare) || !isObj(rec) || !isObj(rec.install) || rec.install.ok !== true) return null;
+  const args = Array.isArray(l.args) ? l.args : [];
+  if (args.length >= 40 || (args[0] && SERVE_SUBCOMMANDS.includes(String(args[0]).toLowerCase()))) return null;
+  for (const p of [bare, envp]) {
+    if (!isObj(p) || typeof p.stderr !== 'string') continue;
+    // It exited by itself (argparse 2, Click/Typer 2, others 0 or 1), not a signal or a time limit.
+    const t = isObj(p.transport) ? p.transport : {};
+    if (!Number.isInteger(t.exit) || ![0, 1, 2, 64].includes(t.exit) || t.signal) continue;
+    const sub = serveSubcommand(p.stderr);
+    if (sub) return { reason: 'cli_subcommand', change: { args_prefix: [sub] } };
+  }
+  return null;
+}
+
+/**
+ * Plan the retries from the subjects' first runs (driver-subjects, read as data): targets-retry.json (the same targets,
+ * the changed launch, each checked by the sandbox's own target check) and retry.json. Returns the retries.
+ */
+export function planRetries({ work, validateTarget = () => {} }) {
+  const plan = readJson(join(work, 'plan.json'));
+  if (!plan || plan.format !== PLAN_FORMAT) throw new Error('no plan in the work folder');
+  const subj = readJson(join(work, 'targets-subjects.json'));
+  const ran = new Set(isObj(subj) && Array.isArray(subj.targets) ? subj.targets.map((t) => isObj(t) && t.id) : []);
+  const targets = []; const retries = [];
+  for (const it of plan.items) {
+    if (!isObj(it.target) || !ran.has(it.target.id)) continue;
+    const dir = join(work, 'driver-subjects', it.target.id);
+    const r = retryFor(it, { rec: readJson(join(dir, 'record.json')), bare: readJson(join(dir, 'probe-bare.json')), envp: readJson(join(dir, 'probe-env.json')) });
+    if (!r) continue;
+    const target = { ...it.target, launch: retryLaunch(it.target.launch, r.change) };
+    try { validateTarget(target, targets.length); } catch { continue; }
+    targets.push(target); retries.push({ id: it.target.id, reason: r.reason, change: r.change });
+  }
+  writeFileSync(join(work, 'targets-retry.json'), json({ format: TARGETS_FORMAT, about: 'live-probe retries', defaults: { timeout_s: plan.subject_timeout_s }, targets }));
+  writeFileSync(join(work, 'retry.json'), json({ format: RETRY_FORMAT, retries }));
+  return retries;
+}
+
+/** retry.json as the bundle step trusts it: { <target id>: { reason, change } }, only well-formed entries. */
+export function retriesOf(file) {
+  const j = readJson(file);
+  const out = {};
+  if (!isObj(j) || j.format !== RETRY_FORMAT || !Array.isArray(j.retries)) return out;
+  for (const x of j.retries.slice(0, 100)) {
+    if (!isObj(x) || typeof x.id !== 'string' || !/^s[0-9]{3}$/.test(x.id) || !['mcp_drift', 'cli_subcommand'].includes(x.reason)) continue;
+    const ch = isObj(x.change) ? x.change : {};
+    const c = x.reason === 'mcp_drift'
+      ? (Array.isArray(ch.constraints) && ch.constraints.every((v) => typeof v === 'string' && /^[A-Za-z0-9._-]{1,60}[<>=!~]{1,2}[0-9][0-9.]{0,20}$/.test(v)) ? { constraints: ch.constraints.slice(0, 10) } : null)
+      : (Array.isArray(ch.args_prefix) && ch.args_prefix.length === 1 && SERVE_SUBCOMMANDS.includes(ch.args_prefix[0]) ? { args_prefix: [ch.args_prefix[0]] } : null);
+    if (c) out[x.id] = { reason: x.reason, change: c };
+  }
+  return out;
+}
+
 // ------------------------------------------------------------------ one item
 
 /** Everything about one item: { status, detail, files, skips, subjectSha }. Never throws on subject data. */
@@ -1980,7 +2209,7 @@ export function buildItem(item, ctx) {
     lines.push(...resolutionObs(r));
     result.install = r.choice ? { method: r.choice.type, matched_by: safeText(r.choice.matched_by, /^[a-z+-]{1,40}$/), verified_by: safeText(r.choice.verified_by, /^[a-z_]{1,20}$/), provenance_signer: safeText(r.choice.provenance_signer, /^[a-z_]{1,40}$/), oci_bytes: int(r.choice.oci_bytes), transport: r.choice.transport, version_requested: safeText(r.choice.version, SAFE_VERSION), args: r.choice.args_n, args_unfilled: r.choice.args_unfilled, env_declared: r.choice.env_names.length, registry_entries: r.registry ? r.registry.entries : 0, entry_source: safeText(r.choice.entry_source, /^[a-z_]{1,30}$/) } : null;
     if (Array.isArray(r.unverified)) result.unverified = r.unverified.map((u) => safeText(u.why, /^[a-z_]{1,40}$/));
-    files['raw/resolution.json'] = json({ registry: r.registry, choice: r.choice, candidates: r.candidates, launch: r.launch, subdir: r.subdir, seed_packages: r.seed_packages, invalid: r.invalid ?? null, unverified: r.unverified ?? null, ...(r.error_class ? { error_class: safeText(r.error_class, /^[A-Za-z]{1,40}$/) } : {}) });
+    files['raw/resolution.json'] = json({ registry: r.registry, choice: r.choice, candidates: r.candidates, launch: r.launch, subdir: r.subdir, seed_packages: r.seed_packages, invalid: r.invalid ?? null, unverified: r.unverified ?? null, transport_refused: r.transport_refused ?? null, ...(r.error_class ? { error_class: safeText(r.error_class, /^[A-Za-z]{1,40}$/) } : {}) });
   }
   let detail = null; let subjectSha = null; let deadlineHit = ctx.deadlineHit;
   let oracle = { lines: [], raw: [], summary: null, components: [] };
@@ -1989,16 +2218,37 @@ export function buildItem(item, ctx) {
   } else {
     const oci = item.target && item.target.launch && item.target.launch.kind === 'docker' && ctx.ociOut;
     const build = !oci && item.target && isBuild(item.target.launch) && ctx.buildsOut;
-    const dir = oci ? join(ctx.ociOut, item.target_id, item.target_id) : build ? join(ctx.buildsOut, item.target_id) : join(ctx.subjectsOut, item.target_id);
-    const telemetryFile = oci ? join(ctx.ociOut, item.target_id, '_shard', 'telemetry.jsonl') : build ? ctx.buildsTelemetry : ctx.subjectsTelemetry;
+    let dir = oci ? join(ctx.ociOut, item.target_id, item.target_id) : build ? join(ctx.buildsOut, item.target_id) : join(ctx.subjectsOut, item.target_id);
+    let telemetryFile = oci ? join(ctx.ociOut, item.target_id, '_shard', 'telemetry.jsonl') : build ? ctx.buildsTelemetry : ctx.subjectsTelemetry;
     const ociRun = oci ? (ctx.ociRuns || {})[item.target_id] : null;
     if (oci) deadlineHit = !ociRun || ociRun.outcome === 'deadline' || ociRun.rc === 124 || ociRun.rc === 137;
     // The builds ran after the subjects (or did not, when the deadline came first: builds_rc stays -1).
     if (build) deadlineHit = !Number.isInteger(ctx.state.builds_rc) || ctx.state.builds_rc < 0 || ctx.state.builds_rc === 124 || ctx.state.builds_rc === 137;
-    const rec = readJson(join(dir, 'record.json'));
-    const bare = readJson(join(dir, 'probe-bare.json'));
-    const envp = readJson(join(dir, 'probe-env.json'));
-    const stat = readJson(join(dir, 'static.json'));
+    let rec = readJson(join(dir, 'record.json'));
+    let bare = readJson(join(dir, 'probe-bare.json'));
+    let envp = readJson(join(dir, 'probe-env.json'));
+    let stat = readJson(join(dir, 'static.json'));
+    // R-LP-81: the one retry with a changed launch (`retry` planned it from this first run; retry.json). When it lists
+    // tools, its run is the item's; when it does not (or never ran), the first run's cause stands with its fault. Both
+    // runs are kept: the other one's record, probes and steps under raw/first/ or raw/retry/.
+    const retry = !oci && !build && !listed(envp) && !listed(bare) && isObj(ctx.retries) ? ctx.retries[item.target_id] : null;
+    let other = null;
+    if (retry) {
+      const rdir = join(ctx.retryOut, item.target_id);
+      const r2 = { rec: readJson(join(rdir, 'record.json')), bare: readJson(join(rdir, 'probe-bare.json')), envp: readJson(join(rdir, 'probe-env.json')) };
+      const won = listed(r2.envp) || listed(r2.bare);
+      result.retry = { reason: retry.reason, change: retry.change, ran: !!r2.rec, listed: won, detail: null };
+      if (won) {
+        // What ran differs from the plan's launch: say so where the install is described (R-LP-81).
+        if (result.install) result.install.retry = { reason: retry.reason, change: retry.change };
+        lines.push(...(EMIT_LAUNCH_RETRY_FIELD ? [obs('launch_retry', { reason: retry.reason, change: retry.change })] : []));
+        other = { prefix: 'raw/first/', dir, rec, bare, envp };
+        dir = rdir; rec = r2.rec; bare = r2.bare; envp = r2.envp; stat = readJson(join(rdir, 'static.json')) || stat; telemetryFile = ctx.retryTelemetry;
+      } else {
+        other = { prefix: 'raw/retry/', dir: rdir, ...r2 };
+        if (r2.rec) result.retry.detail = failureDetail(r2.rec, r2.bare, r2.envp, { records: telemetryFor(ctx.retryTelemetry, item.target_id).records, stepsLog: readText(join(rdir, 'steps.log')), launch: retryLaunch(r.launch, retry.change), argsUnfilled: r.choice ? r.choice.args_unfilled : null, owned: ownedEntry(r.choice), pydeps: r.choice ? r.choice.pydeps : null, crashNotEvidence: crashNotEvidenceOf(r.choice, r2.rec) });
+      }
+    }
     if (rec) {
       const gh = rec.source && rec.source.github;
       subjectSha = gh && typeof gh.sha === 'string' && /^[0-9a-f]{40}$/.test(gh.sha) ? gh.sha : null;
@@ -2028,7 +2278,10 @@ export function buildItem(item, ctx) {
       lines.push(obs('server_info', serverInfo(noTools.initialize.serverInfo), 'no serverInfo object'));
       lines.push(obs('capabilities_flags', capabilityFlags(noTools.initialize.capabilities), 'no capabilities object'));
     } else if (!primary) {
-      detail = ociRun && ociRun.outcome === 'disk_low' ? 'disk_low' : failureDetail(rec, bare, envp, { deadlineHit, records: tel.records, stepsLog: readText(join(dir, 'steps.log')), launch: r.launch, argsUnfilled: r.choice ? r.choice.args_unfilled : null, owned: ownedEntry(r.choice), pydeps: r.choice ? r.choice.pydeps : null, crashNotEvidence: crashNotEvidenceOf(r.choice, rec) });
+      detail = ociRun && ociRun.outcome === 'disk_low' ? 'disk_low' : failureDetail(rec, bare, envp, { deadlineHit, records: tel.records, stepsLog: readText(join(dir, 'steps.log')), launch: r.launch, argsUnfilled: r.choice ? r.choice.args_unfilled : null, owned: ownedEntry(r.choice), pydeps: r.choice ? r.choice.pydeps : null, crashNotEvidence: crashNotEvidenceOf(r.choice, rec), entryGuess: entryGuessOf(r.choice), pypiRelease: r.choice ? r.choice.pypi_release : null });
+      // R-LP-81: a retry was planned because the first run's cause was ours to test (an SDK we let float, a subcommand
+      // we did not give): that first run is never the server's fault, whatever its detail would say alone.
+      if (retry && (DETAILS[detail] || [])[3] === 'subject') { result.retry.first_detail = detail; detail = retry.reason === 'mcp_drift' ? 'start_dependency_drift' : 'start_env_limited'; }
     } else {
       const text = listText(primary.lists['tools/list'].raw_pages);
       let g = null;
@@ -2092,6 +2345,11 @@ export function buildItem(item, ctx) {
     for (const [k, p] of [['bare', bare], ['env', envp]]) if (p) raw.push(['raw/probe-' + k + '.json', Buffer.from(json(p))]);
     if (rec) raw.push(['raw/record.json', Buffer.from(json(rec))]);
     for (const f of ['registry.json', 'static.json', 'analysis.json', 'steps.log']) { const b = readText(join(dir, f)); if (b) raw.push(['raw/' + f.replace(/\.log$/, '.txt'), b]); }
+    if (other) {
+      for (const [k, p] of [['bare', other.bare], ['env', other.envp]]) if (p) raw.push([other.prefix + 'probe-' + k + '.json', Buffer.from(json(p))]);
+      if (other.rec) raw.push([other.prefix + 'record.json', Buffer.from(json(other.rec))]);
+      const b = readText(join(other.dir, 'steps.log')); if (b) raw.push([other.prefix + 'steps.txt', b]);
+    }
 
     if (tel.lines.length) raw.push(['raw/telemetry.jsonl', Buffer.from(tel.lines.join('\n') + '\n')]);
     lines.push(...networkEvents(tel.records).map((e) => obs('network_event', e)));
@@ -2278,6 +2536,7 @@ export function bundleShard({ work, env = process.env, now = () => new Date(), l
     deadlineHit: state.subjects_rc === 124 || state.subjects_rc === 137,
     ociOut: join(work, 'driver-oci'), ociRuns: ociRuns(join(work, 'oci-runs.jsonl')),
     buildsOut: join(work, 'driver-builds'), buildsTelemetry: join(work, 'driver-builds', '_shard', 'telemetry.jsonl'),
+    retryOut: join(work, 'driver-retry'), retryTelemetry: join(work, 'driver-retry', '_shard', 'telemetry.jsonl'), retries: retriesOf(join(work, 'retry.json')),
     runnerEnv: runner ? { os: safeText(runner.os, /^[a-z]{1,10}$/), arch: safeText(runner.arch, /^[a-z0-9_]{1,10}$/), kernel: safeText(runner.kernel, /^[A-Za-z0-9._+-]{1,60}$/), node: safeText(runner.node, /^v[0-9.]{1,20}$/), docker: safeText(runner.docker, /^[0-9][0-9A-Za-z.+-]{0,30}$/), container_platform: safeText(runner.container_platform, /^[a-z0-9/]{1,30}$/) } : null,
     toolVersions: { mcp_check: VERSION, rubric: M.RUBRIC_VERSION, spec: M.SPEC_VERSION, surface_corpus: mscCommit, worker_kit: safeText(state.worker_kit_ref, /^[0-9a-f]{40}$/), gvisor: safeText(state.gvisor_release, /^[0-9.a-z-]{1,40}$/) },
     sandboxSummary: { runtime: 'runsc', selftest: state.selftest_check_rc === 0 ? 'passed' : 'failed', controls_rc: int(state.controls_rc), subjects_rc: int(state.subjects_rc), swept: state.swept === true },
@@ -2447,6 +2706,12 @@ export async function main(argv, { env = process.env, stdout = process.stdout, s
     output(env, lines, stdout);
     for (const it of plan.items) say('item ' + it.index + ': ' + (it.target ? 'runnable (' + it.resolution.choice.type + ', ' + it.resolution.choice.transport + ')' : 'skipped (' + it.resolution.detail + ')'));
     say(plan.runnable + ' of ' + plan.items.length + ' subjects runnable; each has ' + plan.subject_timeout_s + ' s');
+    return 0;
+  }
+  if (cmd === 'retry' && rest.length === 3 && rest[1] === '--msc') {
+    const { validateTarget } = await import(pathToFileURL(join(resolve(rest[2]), 'src', 'targets.mjs')).href);
+    const retries = planRetries({ work: rest[0], validateTarget });
+    say(retries.length + ' retr' + (retries.length === 1 ? 'y' : 'ies') + (retries.length ? ': ' + retries.map((x) => x.id + ' ' + x.reason).join(', ') : ''));
     return 0;
   }
   if (cmd === 'bundle' && rest.length === 1) {

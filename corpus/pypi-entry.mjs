@@ -154,6 +154,24 @@ export function pickScript(scripts, pkg) {
 }
 
 /**
+ * R-LP-82: the console script to run, with how it was chosen: { entry, drop, source } or null. First a first package
+ * argument that names a declared script exactly (source registry_args; drop 1 of the args): our reading of the args,
+ * not the publisher's word (a `uvx <package> <args>` launch passes them to the package's own script), so like
+ * lone_script its failure is never evidence (live-probe.mjs entryGuessOf). Then pickScript's choice (source console_script). Then a package's only script
+ * with no server signal (source lone_script): it is what a user would run, so it is run, but it is still our pick, so a
+ * failure of it is never evidence against the server (failureDetail treats it like the package-name guess).
+ */
+export function scriptChoice(scripts, pkg, args = []) {
+  if (!scripts.length) return null;
+  const first = Array.isArray(args) && typeof args[0] === 'string' ? args[0] : null;
+  if (first && BIN.test(first)) { const named = scripts.find(([n]) => n === first); if (named) return { entry: named[0], drop: 1, source: 'registry_args' }; }
+  const picked = pickScript(scripts, pkg);
+  if (picked) return { entry: picked, drop: 0, source: 'console_script' };
+  if (scripts.length === 1) return { entry: scripts[0][0], drop: 0, source: 'lone_script' };
+  return null;
+}
+
+/**
  * The top-level module with a __main__.py to run as `python -m`: the one named like the package, else the only one,
  * if its name says mcp or server. Tests, docs, examples and scripts never count.
  */
@@ -228,22 +246,25 @@ export function pickWheel(files) {
 }
 
 /**
- * How to run a PyPI package: { entry, args_prefix?, entry_source, script_count?, wheel? } (wheel: the file read).
- * entry_source: console_script | module_main | ambiguous | no_wheel | no_entry_point | wheel_unreadable | lookup_failed.
- * Only the first two set an entry; the rest leave the run on the package-name guess.
+ * How to run a PyPI package: { entry, args_prefix?, args_drop?, entry_source, script_count?, wheel? } (wheel: the file
+ * read; args_drop: how many of the registry's package arguments the entry takes, R-LP-82). entry_source:
+ * registry_args | console_script | lone_script | module_main | ambiguous | no_wheel | no_entry_point | wheel_unreadable
+ * | lookup_failed. Only the first four set an entry; the rest leave the run on the package-name guess.
  */
-export async function pypiEntry(pkg, version, { fetch: fetchImpl = globalThis.fetch, timeoutMs = 20_000 } = {}) {
+export async function pypiEntry(pkg, version, { fetch: fetchImpl = globalThis.fetch, timeoutMs = 20_000, args = [] } = {}) {
   const url = 'https://pypi.org/pypi/' + encodeURIComponent(pkg) + (version && version !== 'latest' ? '/' + encodeURIComponent(version) : '') + '/json';
   const meta = await getCapped(fetchImpl, url, { cap: JSON_CAP, accept: 'application/json', timeoutMs });
-  if (meta.error) return { entry_source: 'lookup_failed' };
+  // R-LP-90: PyPI's own 404 for the release is the one fact that it is not there.
+  if (meta.error) return { entry_source: 'lookup_failed', ...(meta.error === 'not_found' ? { release: { found: false, files: 0 } } : {}) };
   let j;
   try { j = JSON.parse(meta.buf.toString('utf8')); } catch { return { entry_source: 'lookup_failed' }; }
+  const release = { found: true, files: j && Array.isArray(j.urls) ? j.urls.length : null };
   const info = j && typeof j === 'object' && j.info && typeof j.info === 'object' ? j.info : null;
-  const { members, ...r } = await entryOf(j, pkg, fetchImpl, timeoutMs);
-  return { ...r, deps: pypiDeps(info, members || null) };
+  const { members, ...r } = await entryOf(j, pkg, fetchImpl, timeoutMs, args);
+  return { ...r, deps: pypiDeps(info, members || null), release };
 }
 
-async function entryOf(j, pkg, fetchImpl, timeoutMs) {
+async function entryOf(j, pkg, fetchImpl, timeoutMs, args = []) {
   const wheel = pickWheel(j && j.urls);
   if (!wheel) return { entry_source: 'no_wheel' };
   if (Number(wheel.size) > WHEEL_CAP) return { entry_source: 'wheel_unreadable' };
@@ -264,8 +285,8 @@ async function entryOf(j, pkg, fetchImpl, timeoutMs) {
     scripts = consoleScripts(text.toString('utf8'));
   }
   if (scripts.length) {
-    const entry = pickScript(scripts, pkg);
-    return entry ? { entry, entry_source: 'console_script', script_count: scripts.length, wheel: whl, members: names } : { entry_source: 'ambiguous', script_count: scripts.length, members: names };
+    const c = scriptChoice(scripts, pkg, args);
+    return c ? { entry: c.entry, ...(c.drop ? { args_drop: c.drop } : {}), entry_source: c.source, script_count: scripts.length, wheel: whl, members: names } : { entry_source: 'ambiguous', script_count: scripts.length, members: names };
   }
   const mod = pickMainModule(names, pkg);
   if (mod) return { entry: 'python', args_prefix: ['-m', mod], entry_source: 'module_main', script_count: 0, wheel: whl, members: names };

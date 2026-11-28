@@ -87,8 +87,8 @@ test('live-probe helpers: repository URLs, OCI references, arguments, env, trans
   assert.deepEqual(LP.packageArgs([{ type: 'positional', value: 'serve' }, { type: 'named', name: '--port', default: '8080' }, { type: 'positional', isRequired: true, valueHint: 'path' }, { type: 'positional', value: '{dir}' }]), { args: ['serve', '--port', '8080'], unfilled: 1 });
   assert.deepEqual(LP.packageEnv([{ name: 'API_KEY', isRequired: true, isSecret: true, default: 'x' }, { name: 'MODE', isRequired: true, default: 'fast' }, { name: 'PATH', isRequired: true }, { name: 'OPT' }]), { env: { API_KEY: null, MODE: 'fast' }, names: ['API_KEY', 'MODE', 'OPT'] });
   assert.deepEqual(LP.transportOf({ type: 'streamable-http', url: 'http://localhost:3001/mcp' }), { transport: 'http', http: { port: 3001, path: '/mcp' } });
-  assert.deepEqual(LP.transportOf({ type: 'sse', url: 'http://localhost:3001/sse' }), { detail: 'unsupported_transport' });
-  assert.deepEqual(LP.transportOf({ type: 'streamable-http', url: 'http://localhost:{port}/mcp' }), { detail: 'unsupported_transport' });
+  assert.deepEqual(LP.transportOf({ type: 'sse', url: 'http://localhost:3001/sse' }), { detail: 'unsupported_transport', why: 'sse' });
+  assert.deepEqual(LP.transportOf({ type: 'streamable-http', url: 'http://localhost:{port}/mcp' }), { detail: 'unsupported_transport', why: 'url_variable' });
   assert.equal(LP.purlOf('npm', '@isokron/mcp-check', '1.3.1'), 'pkg:npm/%40isokron/mcp-check@1.3.1');
   assert.equal(LP.purlOf('pypi', 'MCP_Server.Time', 'latest'), 'pkg:pypi/mcp-server-time');
 });
@@ -662,7 +662,7 @@ test('live-probe failure details: install, start, credentials, list, evidence an
   assert.equal(LP.failureDetail(null, null, null), 'harness_error');
   assert.equal(LP.failureDetail(rec({ excluded: 'sandbox evidence missing' })), 'sandbox_evidence_missing');
   assert.equal(LP.failureDetail(rec({ install: { kind: 'docker', ok: false, steps: [] } })), 'image_pull_failed');
-  assert.equal(LP.failureDetail(rec({ install: { kind: 'npm', ok: false, steps: [{ name: 'install', exit: 1 }] }, }), null, null, { stepsLog: 'npm error code E404' }), 'install_failed');
+  assert.equal(LP.failureDetail(rec({ install: { kind: 'npm', ok: false, steps: [{ name: 'install', exit: 1 }] }, }), null, null, { stepsLog: 'npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/acme-mcp - Not found', launch: { kind: 'npm', package: 'acme-mcp' }, owned: true }), 'install_failed');
   assert.equal(LP.failureDetail(rec({ install: { kind: 'npm', ok: false, steps: [{ name: 'install', exit: null, timed_out: true }] } })), 'install_timeout');
   assert.equal(LP.failureDetail(rec({}), { ...exited(1), stderr: 'panic: boom' }, null, ctx), 'start_failed');
   assert.equal(LP.failureDetail(rec({}), exited(1), null, ctx), 'start_env_limited', 'an early exit with no stderr is no evidence (R-LP-45)');
@@ -709,10 +709,16 @@ test('R-LP-30: an install killed by a limit (137, 124, out of memory) is install
 
 test('R-LP-31: an install that failed with no package-level cause is install_build_failed (tool); only a package error stays the server\'s', () => {
   const log = (t) => LP.failureDetail(badInstall(), null, null, { stepsLog: t });
-  for (const t of ['npm error code E404\nnpm error 404 Not Found', 'npm error code ETARGET\nnpm error notarget No matching version', 'ERROR: No matching distribution found for acme-mcp', 'npm error acme-mcp declares no bin']) assert.equal(log(t), 'install_failed', t);
+  // R-LP-90: the installer's word about the subject's own package, for an owned entry (test/live-probe-install-evidence.test.mjs).
+  const own = (t, launch) => LP.failureDetail(badInstall({ kind: launch.kind }), null, null, { stepsLog: t, launch, owned: true, pypiRelease: { found: false, files: 0 } });
+  assert.equal(own('npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/acme-mcp - Not found', { kind: 'npm', package: 'acme-mcp' }), 'install_failed');
+  assert.equal(own('npm error code ETARGET\nnpm error notarget No matching version found for acme-mcp@9.9.9.', { kind: 'npm', package: 'acme-mcp' }), 'install_failed');
+  assert.equal(own('ERROR: No matching distribution found for acme-mcp', { kind: 'pypi', package: 'acme_mcp' }), 'install_failed');
+  assert.equal(log('npm error the package declares no bin'), 'entry_unresolved', 'our entry helper\'s reading');
+  for (const t of ['npm error code E404\nnpm error 404 Not Found', 'npm error code ETARGET\nnpm error notarget No matching version', 'ERROR: No matching distribution found for acme-mcp']) assert.equal(log(t), 'install_build_failed', 'no package or entry in hand: ' + t);
   for (const t of ['gyp ERR! find Python', 'error: command \'gcc\' failed: No such file or directory', 'npm error code EBADENGINE\nnpm error engine Unsupported engine', 'Failed building wheel for pydantic-core', '']) assert.equal(log(t), 'install_build_failed', t);
   // The text may be in the step itself, as the lane writes it.
-  assert.equal(LP.failureDetail(badInstall({}, { stderr: 'npm error code E404' })), 'install_failed');
+  assert.equal(LP.failureDetail(badInstall({}, { stderr: 'npm error code E404\nnpm error 404 Not Found - GET https://registry.npmjs.org/acme-mcp - Not found' }), null, null, { launch: { kind: 'npm', package: 'acme-mcp' }, owned: true }), 'install_failed');
   assert.deepEqual(LP.DETAILS.install_build_failed, ['install_failed_registry', false, 'install', 'tool']);
 });
 
@@ -959,7 +965,7 @@ test('live-probe fault evidence (telemetry, steps log, plan) reaches failureDeta
     writeFileSync(join(w, 'driver-subjects', 's002', 'probe-bare.json'), '');
     writeFileSync(join(w, 'driver-subjects', 's002', 'steps.log'), log);
   };
-  assert.equal(run(failedInstall('npm error code E404'))[1], 'install_failed', 'steps.log names a package error');
+  assert.equal(run(failedInstall('npm error code E404'))[1], 'install_build_failed', 'steps.log names no package of the subject\'s (R-LP-90)');
   assert.equal(run(failedInstall('gyp ERR! stack Error: not found: make'))[1], 'install_build_failed', 'steps.log names a build error');
 });
 

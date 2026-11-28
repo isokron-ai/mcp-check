@@ -11,7 +11,8 @@
 #      If it fails, nothing else runs.
 #   3. the controls (our own server from npm, and the forgery server) through the sandbox driver;
 #   4. the subjects through the sandbox driver, stopped at the deadline (the items left report a retryable skip),
-#      then the subjects built in the sandbox (crates), then the OCI subjects one at a time;
+#      then the subjects built in the sandbox (crates), then the OCI subjects one at a time, then one retry of each
+#      subject whose first start failed on a cause a changed launch tests (R-LP-81);
 #      the driver is mcp-surface-corpus's bin/run-shard.mjs, run by corpus/live-probe-driver.mjs, which adds the
 #      oracle stage after each target's probe when ORACLE_CLIENTS names the clients corpus/oracles/install.mjs
 #      installed (corpus/LIVE-PROBE.md, "Oracles");
@@ -45,7 +46,7 @@ if [ "$oracles" != none ] && [ -f "$oracles" ] && node -e '
   const any = (r.conformance && r.conformance.ok) || Object.values(r.clients || {}).some((c) => c && c.ok);
   process.exit(any ? 0 : 1);
 ' "$oracles" 2>/dev/null; then oracles_installed=true; else oracles=none; fi
-install_rc=-1; guard_rc=-1; selftest_rc=-1; check_rc=-1; controls_rc=-1; subjects_rc=-1; builds_rc=-1; swept=false
+install_rc=-1; guard_rc=-1; selftest_rc=-1; check_rc=-1; controls_rc=-1; subjects_rc=-1; builds_rc=-1; retry_rc=-1; swept=false
 left_labelled=-1; left_containers=-1; left_volumes=-1; uid_procs=-1; runsc_procs=-1
 gvisor=$(node -e 'process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).release || ""))' "$msc/gvisor.json" 2>/dev/null || true)
 msc_commit=$(git -C "$msc" rev-parse HEAD 2>/dev/null || true)
@@ -54,10 +55,10 @@ write_state() {
   node -e '
     const [file, ...v] = process.argv.slice(1);
     const n = (x) => (/^-?[0-9]{1,4}$/.test(x) ? Number(x) : null);
-    const s = { oracles_installed: v[15] === "true", install_rc: n(v[0]), guard_rc: n(v[1]), selftest_rc: n(v[2]), selftest_check_rc: n(v[3]), controls_rc: n(v[4]), subjects_rc: n(v[5]), builds_rc: n(v[16]), swept: v[6] === "true", msc_commit: /^[0-9a-f]{40}$/.test(v[7]) ? v[7] : null, gvisor_release: v[8] || null, worker_kit_ref: /^[0-9a-f]{40}$/.test(v[9]) ? v[9] : null, left: { labelled: n(v[10]), containers: n(v[11]), volumes: n(v[12]), uid_65534_processes: n(v[13]), runsc_processes: n(v[14]) }, finished_at: new Date().toISOString() };
+    const s = { oracles_installed: v[15] === "true", install_rc: n(v[0]), guard_rc: n(v[1]), selftest_rc: n(v[2]), selftest_check_rc: n(v[3]), controls_rc: n(v[4]), subjects_rc: n(v[5]), builds_rc: n(v[16]), retry_rc: n(v[17]), swept: v[6] === "true", msc_commit: /^[0-9a-f]{40}$/.test(v[7]) ? v[7] : null, gvisor_release: v[8] || null, worker_kit_ref: /^[0-9a-f]{40}$/.test(v[9]) ? v[9] : null, left: { labelled: n(v[10]), containers: n(v[11]), volumes: n(v[12]), uid_65534_processes: n(v[13]), runsc_processes: n(v[14]) }, finished_at: new Date().toISOString() };
     require("fs").writeFileSync(file, JSON.stringify(s, null, 2) + "\n");
   ' "$work/sandbox.json" "$install_rc" "$guard_rc" "$selftest_rc" "$check_rc" "$controls_rc" "$subjects_rc" "$swept" "$msc_commit" "$gvisor" "${WORKER_KIT_REF:-}" \
-    "$left_labelled" "$left_containers" "$left_volumes" "$uid_procs" "$runsc_procs" "$oracles_installed" "$builds_rc"
+    "$left_labelled" "$left_containers" "$left_volumes" "$uid_procs" "$runsc_procs" "$oracles_installed" "$builds_rc" "$retry_rc"
 }
 
 sweep() {
@@ -160,6 +161,29 @@ while read -r id bytes; do
   sweep >>"$work/sweep.log" 2>&1 || true
   [ -z "$image" ] || docker image rm -f "$image" >>"$work/sweep.log" 2>&1 || true
 done <<<"$oci_lines"
+
+# 4c. One retry, with a changed launch, of each subject whose first start failed on a cause that change tests (R-LP-81:
+#     an MCP SDK that floated to 2.x under a release built for 1.x runs again with mcp<2). Planned by
+#     `corpus/live-probe.mjs retry` from the first runs' output, read as data, each target checked by the sandbox's own
+#     target check; run like the subjects, until the deadline. Not run at all: retry_rc stays -1.
+if node "$here/live-probe.mjs" retry "$work" --msc "$msc" >"$work/retry-plan.txt" 2>&1; then
+  cat "$work/retry-plan.txt"
+  retries=$(node -e 'try { process.stdout.write(String(JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")).targets.length)) } catch { process.stdout.write("0") }' "$work/targets-retry.json")
+  if [ "$retries" -gt 0 ]; then
+    sweep >>"$work/sweep.log" 2>&1 || true
+    left=$(( deadline - $(date +%s) ))
+    if [ "$left" -gt 90 ]; then
+      echo "retries ($retries, at most ${left}s):"
+      drive "$work/targets-retry.json" "$work/driver-retry" "$left" </dev/null; retry_rc=$?
+    else
+      echo "::warning title=live-probe::no time left for the retries"
+    fi
+  else
+    retry_rc=0
+  fi
+else
+  echo "::warning title=live-probe::the retries could not be planned; the first runs stand"
+fi
 
 # 5. Nothing of a target may outlive this step: no container or volume at all (labelled or not), no labelled
 #    network, no host process running as the sandbox user (65534), and no runsc or containerd-shim-runsc process.

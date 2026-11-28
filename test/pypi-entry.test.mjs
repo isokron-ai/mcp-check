@@ -20,7 +20,7 @@ function zip(entries) {
   return Buffer.concat([...locals, cd, eocd]);
 }
 // pypiEntry's answer without its dependency facts (R-LP-61 reads those).
-const nd = ({ deps, ...r }) => r;
+const nd = ({ deps, release, ...r }) => r;
 const EP = (lines) => '[console_scripts]\n' + lines.join('\n') + '\n\n[other]\nnot-a-script = x:y\n';
 const res = (status, body, headers = {}) => ({ ok: status >= 200 && status < 300, status, headers: { get: (k) => headers[k.toLowerCase()] ?? null }, arrayBuffer: async () => (Buffer.isBuffer(body) ? body : Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))) });
 function pypiFetch({ pkg = 'widget-mcp', version = '1.0.0', wheel, files, status = 200 } = {}) {

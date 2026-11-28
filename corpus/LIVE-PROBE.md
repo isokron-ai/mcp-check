@@ -35,11 +35,16 @@ The run is named `shard <shard_id>`.
    Building from source is the build-probe lane's work, not this one.
    - **Which command runs a PyPI package.** The planner reads the release's wheel (pure-Python first, at most 30 MiB,
      files.pythonhosted.org only) and launches the console script it declares in `*.dist-info/entry_points.txt`: the
-     one named like the package, else the only `<package>-mcp`-style name, else the only one with mcp in its name,
+     one the registry's first package argument names (the publisher's `<script> <rest>`; the argument is taken by the
+     entry, R-LP-82), else the one named like the package, else the only `<package>-mcp`-style name, else the only one with mcp in its name,
      else the only script if its name or target says mcp or server. A wheel with no console script but a top-level
      `<module>/__main__.py` named like the package (or a lone one whose name says mcp or server; never tests, docs,
      examples or scripts) runs as `python -m <module>`. A picked entry is no longer a guess, so it needs that signal. Otherwise (ambiguous, no wheel, unreadable, lookup failed) the run keeps the old
-     `venv/bin/<package name>` guess, which a failure never blames on the server. `install.entry_source` says which.
+     `venv/bin/<package name>` guess, which a failure never blames on the server. A package's only script with no
+     such signal is run too (`lone_script`). Both picks are our reading, not the publisher's word (a `uvx <package>
+     <args>` launch passes the args to the package's own script), so like the guess their failure is never evidence
+     against the server.
+     `install.entry_source` says which.
      The wheel is parsed as untrusted data (bounds-checked, inflation capped); no package code runs on the planner.
    - **Whose entry it is.** Anyone can publish a registry entry whose repository URL names someone else's repository,
      and the package behind it too, so what a package says about itself (npm `repository`, PyPI `project_urls`)
@@ -161,7 +166,19 @@ The run is named `shard <shard_id>`.
      recomputes a pass; the sandbox script then runs no target unless that guard passed from the same commit as
      the checkout, and checks the telemetry once more itself.
 
-   Then the controls, then the subjects, each with its own time limit, all stopped at minute 34 of the job. Last,
+   Then the controls, then the subjects, each with its own time limit, all stopped at minute 34 of the job. After
+   every first run, one retry with a changed launch for a subject whose start failed on a cause that change tests
+   (R-LP-81; `corpus/live-probe.mjs retry` plans it from the first runs' output, read as data, and the sandbox's own
+   target check passes each one): a PyPI server that failed on an import the MCP SDK's 2.x line removed
+   (`mcp.server.fastmcp`, a name or attribute of `mcp`, or the SDK's own "This is mcp 2.x"), while its release declares
+   `mcp` with no upper bound, runs again with `mcp<2` (a resolve to the release date needs the sandbox to take
+   `--uploaded-prior-to`; until then the known cap is the change). A retry that lists tools is the item's run; one that
+   does not leaves the first run's cause as it was, and its fault is never the server's once a retry was planned
+   (a detail that alone would be is kept as `retry.first_detail`); the SDK's own "This is mcp 2.x" is drift on any run. Both runs are in the bundle (`raw/first/` or
+   `raw/retry/`), and `retry` in the result says what was changed and what came of it. A PyPI or npm entry that is a
+   command line with subcommands, which printed its own usage banner and exited by itself, runs again once with the
+   subcommand that banner lists for serving (`mcp`, `stdio`, `serve`, `server`, `run`, `start`, in that order;
+   R-LP-83), never one it does not list. Last,
    every container, network and volume is removed, and the upload steps start only when there is no container or
    volume left at all (labelled or not), no labelled network, no host process running as the sandbox user (uid
    65534), and no `runsc` or `containerd-shim-runsc` process.
@@ -325,11 +342,11 @@ and the 4x free-disk rule. An image on another host is unassessed until the list
 | `private_registry` | `no_runnable_artifact` | tool (we reach only the default registries, as with `unsupported_package`) | no |
 | `image_too_large` (over our 2 GB cap) | `too_large` | tool | no |
 | `remote_only` | `remote_only` | subject | no |
-| `unsupported_transport` (SSE, or HTTP with no fixed local port) | `unsupported_transport` | tool | no |
+| `unsupported_transport` (SSE, or streamable HTTP with no URL, not on loopback, with no port or one under 1024, or naming a variable the package does not declare; a `{variable}` the package declares (an env name's default, a named argument's value or default), such as `{port}`, is filled; `raw/resolution.json` `transport_refused` says which and why, R-LP-86) | `unsupported_transport` | tool | no |
 | `image_unavailable` (the registry's own 404, or 401 or 403 after a good token exchange, or a digest mismatch) | `install_failed_registry` | subject | no |
 | `image_registry_unreadable` (no Bearer challenge, a bad realm, no token, bad JSON, no linux/amd64 entry, no layers, bad sizes, or a 401 or 403 with no token exchanged) | `install_failed_registry` | tool | no |
 | `image_pull_failed` (the run-stage pull failed on a digest the planner already read; the pull records no stderr, so a rate limit, a timeout and the runner's disk look alike) | `install_failed_registry` | tool | no |
-| `install_failed` (non-zero exit, no proxy refusal, not 137 or 124, and the log shows a package error: npm E404 or ETARGET, pip "No matching distribution", "declares no bin") | `install_failed_registry` | subject | no |
+| `install_failed` (non-zero exit, no proxy refusal, not 137 or 124, an entry in the subject's namespace, no sign of trouble reaching the index, and the installer's word about the package itself (R-LP-90): npm E404 for its own registry URL or ETARGET for its own name; pip "No matching distribution found for" its own name (PEP 503) while the planner's PyPI JSON showed the release missing or with no file. A release for other Pythons or platforms only is an unsupported platform; a dependency's, a retry's or our entry helper's word ("declares no bin", an unresolved entry) is ours) | `install_failed_registry` | subject | no |
 | `install_blocked` (our egress proxy refused something the install asked for) | `install_failed_registry` | tool | no |
 | `install_resource_limit` (exit 137 or 124, or out of memory) | `install_failed_registry` | tool | no |
 | `install_build_failed` (a native build, a missing compiler or library, an engine mismatch, or any other install failure with no package error) | `install_failed_registry` | tool | no |
@@ -344,8 +361,8 @@ and the 4x free-disk rule. An image on another host is unassessed until the list
 | `start_needs_config` (the server exited with its own code (not 125, 126, 127 or 137; no signal) and its stderr asks for configuration: a config file not found or unreadable, a kubeconfig or current-context, `--config`, a `Usage:` block, a missing or required argument, option, flag or environment variable, "please create/set/provide/specify", a missing required setting, credential or parameter, a configuration error, "not configured", "no ... credentials configured", "pass --x", "run ... first", invalid configuration, `KeyError: 'GITHUB_TOKEN'` (an unset variable read), pydantic settings validation (`validation error for Settings`, `Field required`); checked before the crash signature, so a configuration request raised with a traceback is still this) | `timeout_start` | tool | no |
 | `missing_own_module` (the server's own package lacks a submodule its code imports: `No module named 'stratevo.cli.commands'` while `stratevo` is the wheel's own top-level package; only with the wheel read) | `timeout_start` | subject | no |
 | `undeclared_dependency` (the server's own code (its last frame is in its own package or console script) imports a top-level module that is not installed, that its wheel does not ship, that no distribution its `requires_dist` declares provides (every declared distribution must be one whose import names we know, `DIST_IMPORTS`, none of them this one: `jose` comes from `python-jose`), and that is not Python's own or the venv's; e.g. `httpx` never declared, or a `utils` the wheel left out; only with the release's facts read) | `timeout_start` | subject | no |
-| `unsupported_platform` (an OCI image with no linux/amd64 platform, which the sandbox does not run; or the server says it runs on macOS or Windows only, or needs an executable only they have, such as `xcrun` or `powershell.exe`; the sandbox is Linux) | `timeout_start` | tool | no |
-| `start_needs_extra` (a module only an extra of the package brings is missing (the planner installs an extra named `mcp`, `server` or `cli` with the package once the pinned sandbox takes `launch.extras`: `EMIT_PYPI_EXTRAS`) (`requires_dist` with `extra == "..."`, read by the planner), or the server names the extra to install, `pip install 'pkg[mcp]'`; we installed the base package) | `timeout_start` | tool | no |
+| `unsupported_platform` (an OCI image with no linux/amd64 platform, which the sandbox does not run; an npm package whose `os`, `cpu` or `libc` leaves Linux on amd64 out (npm's `EBADPLATFORM`/`notsup`, R-LP-86); or the server says it runs on macOS or Windows only, or needs an executable only they have, such as `xcrun` or `powershell.exe`; the sandbox is Linux) | `timeout_start` | tool | no |
+| `start_needs_extra` (a module only an extra of the package brings is missing (the planner installs an extra named `mcp`, `server` or `cli` with the package: `EMIT_PYPI_EXTRAS`, on since the pinned sandbox takes `launch.extras`, R-LP-84) (`requires_dist` with `extra == "..."`, read by the planner), or the server names the extra to install, `pip install 'pkg[mcp]'`; we installed the base package) | `timeout_start` | tool | no |
 | `start_dependency_drift` (an import into a dependency the release declares with no upper bound failed for a submodule, name or attribute the installed version no longer has, e.g. `mcp.server.fastmcp` under mcp 2.x; a Node import of an export a dependency no longer has. Whether drift counts against the server is an open owner decision; until then it is ours) | `timeout_start` | tool | no |
 | `start_failed` (install ok, every argument filled, the server's own non-zero exit (not 125, 126, 127 or 137; for an HTTP-mode server, its container's exit as the sandbox recorded it, only when its output was read back; an exit of 128+n is signal n, ours: 130, 137, 139, 143), the failing probe itself inside half the probe window, no network attempt, no unresolved PyPI console-script guess, none of the causes above (another platform, the network, our sandbox's limits, an extra, a changed dependency, an import we cannot place), AND stderr shows a crash signature: a panic, a traceback, an uncaught or unhandled exception or rejection, a segmentation fault, a missing module of the server's own (its wheel's top-level modules, or one named like the package), an import, syntax, reference or type error, a fatal error, a stack overflow; and no configuration text) | `timeout_start` | subject | no |
 | `start_env_limited` (any other start failure: a signal, 137, exit 0, a late exit, an unfilled argument, a guessed PyPI entry, an early exit with no crash signature on stderr, which is no evidence against the server; or stderr that shows our sandbox stopped it: a read-only file system or refused write, `unable to open database file`, a missing shared library, a binary for another CPU (`Exec format error`), a missing executable (also GitPython's `Bad git executable` and an unbuilt native addon), matched in any case (Go prints them in lower case), a file under `/tmp` (the working directory we force) the image expected under its own WORKDIR; or a failed import we cannot place: a module that is not the server's own (a namespace folder such as `google/` is not) and is neither an extra nor a dependency declared with no upper bound, or a bare npm dependency that is not installed; a missing file at an absolute path, a full disk (`[Errno 28]`), `KeyboardInterrupt` (our stop); or a Python crash whose last frame is inside an installed dependency, not the server's own package) | `timeout_start` | tool | no |
