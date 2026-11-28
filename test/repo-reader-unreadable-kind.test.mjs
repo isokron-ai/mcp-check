@@ -110,3 +110,18 @@ def echo(text: str) -> str:
   assert.deepEqual((await kindsOf(py('description=os.environ["ECHO_DESCRIPTION"]', 'import os\n'))).descriptions, { member: 1 });
   assert.deepEqual((await kindsOf(py('description=ECHO_DESCRIPTION', 'from texts_package import ECHO_DESCRIPTION\n'))).descriptions, { imported: 1 });
 });
+
+test('R-RD-45: the classifier stays linear on hostile input: unclosed imports, a long member chain', () => {
+  const tok = (n, f) => Array.from({ length: n }, (_, i) => f(i)).flat();
+  // 20 000 times `import {` and a name, never closed
+  const t1 = tok(20000, (i) => [{ type: 'id', value: 'import' }, { type: 'p', value: '{' }, { type: 'id', value: `n${i}` }]);
+  let t0 = performance.now();
+  const names = UK.importedNames(t1);
+  assert.ok(performance.now() - t0 < 2000, `importedNames took ${Math.round(performance.now() - t0)} ms`);
+  assert.ok(names.size > 0);
+  // a member chain of 200 000 links: one classification looks at a bounded head
+  const t2 = [{ type: 'id', value: 'a' }, ...tok(200000, () => [{ type: 'p', value: '.' }, { type: 'id', value: 'b' }])];
+  t0 = performance.now();
+  for (let i = 0; i < 1000; i++) assert.equal(UK.valueKind(t2, 0, undefined, { imports: new Set() }), 'member');
+  assert.ok(performance.now() - t0 < 2000, `1000 classifications took ${Math.round(performance.now() - t0)} ms`);
+});

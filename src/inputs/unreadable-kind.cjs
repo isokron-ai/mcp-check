@@ -60,6 +60,8 @@ function importedNames(t) {
       for (j++; j < t.length && !isP(t[j], '}'); j++) {
         if (isId(t[j]) && isId(t[j + 1], 'as') && isId(t[j + 2])) { out.add(t[j + 2].value); j += 2; } else if (isId(t[j]) && t[j].value !== 'type') out.add(t[j].value);
       }
+      // Go on after what was read: an `import {` with no `}` is read once, not once per later import (linear).
+      k = j;
       continue;
     }
     if (isP(t[j], '*') && isId(t[j + 1], 'as') && isId(t[j + 2])) { out.add(t[j + 2].value); continue; }
@@ -70,8 +72,10 @@ function importedNames(t) {
       if (isId(t[k2], 'as') && isId(t[k2 + 1])) { local = t[k2 + 1].value; k2 += 2; }
       out.add(local);
       if (isP(t[k2], ',')) { j = k2 + 1; continue; }
+      j = k2;
       break;
     }
+    k = Math.max(k, j - 1);
   }
   return out;
 }
@@ -127,7 +131,7 @@ function valueKind(t, i, end, opts, depth0) {
     if (isP(t[i + 1], '=>')) return 'function';
     let k = i + 1; let member = false;
     for (;;) {
-      if ((isP(t[k], '.') || isP(t[k], '?.')) && isId(t[k + 1])) { member = true; k += 2; continue; }
+      if (k < stop && (isP(t[k], '.') || isP(t[k], '?.')) && isId(t[k + 1])) { member = true; k += 2; continue; }
       if (isP(t[k], '[')) { member = true; let d = 0; for (; k < stop; k++) { if (isP(t[k], '[')) d++; else if (isP(t[k], ']')) { d--; if (d === 0) break; } } k++; if (k >= stop) break; continue; }
       break;
     }
