@@ -42,6 +42,15 @@ import { oracleForScan } from './ast-grep/hook.mjs';
 
 const require = createRequire(import.meta.url);
 const Repo = require('../src/inputs/repo-source.cjs');
+const { UNREADABLE_KINDS } = require('../src/inputs/unreadable-kind.cjs');
+
+/** A count of construct kinds as the reader gave it, cut to our closed list and whole positive counts (R-RD-45). */
+export function kindCounts(v) {
+  const out = {};
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return out;
+  for (const k of UNREADABLE_KINDS) if (Number.isInteger(v[k]) && v[k] > 0) out[k] = v[k];
+  return out;
+}
 
 export const FORMAT = 'isokron-mcp-check-scan-static/1';
 export const CONTROL_FORMAT = 'isokron-mcp-check-scan-static-control/1';
@@ -249,6 +258,13 @@ export function provenanceOf(c, r, toolCount) {
     unresolved_names: Number.isInteger(c.unresolvedNames) ? c.unresolvedNames : 0,
     registration_not_seen: registrationNotSeen(c).length,
     unreadable: { input_schemas: n('inputSchema'), descriptions: n('description'), annotations: n('annotations') },
+    // R-RD-45: what kind of construct each unreadable part (and each unresolved name) was, in our words and counts only
+    unreadable_kinds: {
+      input_schemas: kindCounts(c.unreadableKinds && c.unreadableKinds.inputSchema),
+      descriptions: kindCounts(c.unreadableKinds && c.unreadableKinds.description),
+      annotations: kindCounts(c.unreadableKinds && c.unreadableKinds.annotations),
+      names: kindCounts(c.unresolvedKinds),
+    },
     listing_truncated: !!r.truncated,
   };
 }

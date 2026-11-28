@@ -26,10 +26,14 @@
 // raw.githubusercontent.com for files; data.jsdelivr.com / cdn.jsdelivr.net as the fallback. The registry API at
 // registry.modelcontextprotocol.io sends Access-Control-Allow-Origin: *. Nothing goes to IsoKron.
 (function (root, factory) {
-  if (typeof module === 'object' && module.exports) module.exports = factory(require('./repo-go.cjs'), require('./repo-rust.cjs'), require('./repo-csharp.cjs'), require('./repo-effects.cjs'));
-  else root.RepoSource = factory(root.RepoGo, root.RepoRust, root.RepoCSharp, root.RepoEffects); // in a browser, load repo-go.cjs, repo-rust.cjs and repo-csharp.cjs first (repo-effects.cjs too, for the opt-in code effects)
-})(typeof self !== 'undefined' ? self : this, function (RepoGo, RepoRust, RepoCSharp, RepoEffects) {
+  if (typeof module === 'object' && module.exports) module.exports = factory(require('./repo-go.cjs'), require('./repo-rust.cjs'), require('./repo-csharp.cjs'), require('./repo-effects.cjs'), require('./unreadable-kind.cjs'));
+  else root.RepoSource = factory(root.RepoGo, root.RepoRust, root.RepoCSharp, root.RepoEffects, root.RepoUnreadableKind); // in a browser, load repo-go.cjs, repo-rust.cjs, repo-csharp.cjs and unreadable-kind.cjs first (repo-effects.cjs too, for the opt-in code effects)
+})(typeof self !== 'undefined' ? self : this, function (RepoGo, RepoRust, RepoCSharp, RepoEffects, RepoUnreadableKind) {
   'use strict';
+  // R-RD-45: the kind of construct each unreadable part is (unreadable-kind.cjs); without the module every kind is "other".
+  const UK = RepoUnreadableKind || { valueKind: () => 'other', countKinds: (l) => (l.length ? { other: l.length } : {}), UNREADABLE_KINDS: ['other'] };
+  // Mark a part not readable, with the kind of the construct that made it so (the first kind seen for a part stays).
+  const unk = (un, part, kind) => { if (!un.includes(part)) un.push(part); if (!un.kinds) Object.defineProperty(un, 'kinds', { value: {}, enumerable: false, writable: true }); if (!un.kinds[part]) un.kinds[part] = kind || 'other'; };
 
   // ------------------------------------------------------------ tokenizer (JS/TS)
   const PUNCT_BEFORE_REGEX = new Set(['(', ',', '=', ':', '[', '!', '&', '|', '?', '{', '}', ';', '+', '-', '*', '%', '<', '>', '~', '^', '=>', '&&', '||', '??', 'return', 'typeof', 'case']);
@@ -398,7 +402,8 @@
     return Object.assign({}, r, { value: copy });
   }
   function parseObjectOnce(t, i, ctx) {
-    const o = {}; let exact = true; const optionalKeys = new Set(); const unknown = new Set(); const partial = new Set(); let spreadUnknown = false; const childOptional = {}; const literals = {}; i++;
+    const o = {}; let exact = true; const optionalKeys = new Set(); const unknown = new Set(); const partial = new Set(); let spreadUnknown = false; const childOptional = {}; const literals = {}; const kinds = {}; i++;
+    const kindOf = (key, kind) => { if (!kinds[key]) kinds[key] = kind; };
     while (i < t.length && !isP(t[i], '}')) {
       const k = t[i];
       if (isP(k, '...')) {
@@ -421,11 +426,11 @@
         const mk = isP(t[i + 1], '(') ? key : t[i + 1].value;
         let j = i + 1; while (t[j] && !isP(t[j], '{')) j++;
         j = matchClose(t, j) + 1;
-        if (!HANDLER_KEYS.has(mk)) { unknown.add(mk); if (LITERAL_KEYS.has(mk)) { literals[mk] = literalsIn(t, i, j); lose(literalsArr(t, i, j)); } }
+        if (!HANDLER_KEYS.has(mk)) { unknown.add(mk); kindOf(mk, 'function'); if (LITERAL_KEYS.has(mk)) { literals[mk] = literalsIn(t, i, j); lose(literalsArr(t, i, j)); } }
         exact = false; i = isP(t[j], ',') ? j + 1 : j; continue;
       }
       if (isP(t[i + 1], ',') || isP(t[i + 1], '}')) { // shorthand { name }
-        if (ctx && ctx.consts && hasOwn(ctx.consts, key)) { const c = ctx.consts[key]; if (c.lost) lose(c.lost); o[key] = c.value; exact = exact && c.exact; if (c.optional) optionalKeys.add(key); } else { exact = false; if (!HANDLER_KEYS.has(key)) unknown.add(key); }
+        if (ctx && ctx.consts && hasOwn(ctx.consts, key)) { const c = ctx.consts[key]; if (c.lost) lose(c.lost); o[key] = c.value; exact = exact && c.exact; if (c.optional) optionalKeys.add(key); } else { exact = false; if (!HANDLER_KEYS.has(key)) { unknown.add(key); kindOf(key, UK.valueKind(t, i, i + 1)); } }
         i += isP(t[i + 1], ',') ? 2 : 1; continue;
       }
       let j = i + 1;
@@ -433,18 +438,18 @@
       if (!isP(t[j], ':')) return { value: SKIP, end: skipExpr(t, i), exact: false };
       const v = parseValue(t, j + 1, ctx);
       if (v.optional) optionalKeys.add(key);
-      if (v.partial) partial.add(key);
+      if (v.partial) { partial.add(key); kindOf(key, UK.valueKind(t, j + 1, v.end)); }
       // annotations with a hint the reader cannot know ({ readOnlyHint: readOnly }) are not graded as if the hint were absent (R-RD-12)
-      if (key === 'annotations' && v.value !== SKIP && ((v.unknownKeys && v.unknownKeys.size) || v.spreadUnknown)) partial.add(key);
+      if (key === 'annotations' && v.value !== SKIP && ((v.unknownKeys && v.unknownKeys.size) || v.spreadUnknown)) { partial.add(key); kindOf(key, (v.kinds && Object.values(v.kinds)[0]) || (v.spreadUnknown ? 'spread' : 'nested')); }
       if (v.optionalKeys && v.optionalKeys.size) childOptional[key] = v.optionalKeys;
-      if (v.value !== SKIP && tooDeepValue(v.value)) { lose(literalsArr(t, j + 1, v.end)); v.value = SKIP; unknown.add(key); exact = false; }
-      else if (v.value !== SKIP) { o[key] = v.value; exact = exact && v.exact !== false; } else if (!HANDLER_KEYS.has(key)) { exact = false; unknown.add(key); if (LITERAL_KEYS.has(key)) literals[key] = literalsIn(t, j + 1, v.end); lose(literalsArr(t, j + 1, v.end)); if (ctx && ctx.placeholder) o[key] = {}; }
+      if (v.value !== SKIP && tooDeepValue(v.value)) { lose(literalsArr(t, j + 1, v.end)); v.value = SKIP; unknown.add(key); kindOf(key, 'too_deep'); exact = false; }
+      else if (v.value !== SKIP) { o[key] = v.value; exact = exact && v.exact !== false; } else if (!HANDLER_KEYS.has(key)) { exact = false; unknown.add(key); kindOf(key, UK.valueKind(t, j + 1, v.end)); if (LITERAL_KEYS.has(key)) literals[key] = literalsIn(t, j + 1, v.end); lose(literalsArr(t, j + 1, v.end)); if (ctx && ctx.placeholder) o[key] = {}; }
       i = v.end;
       if (isP(t[i], ',')) i++;
       else if (!isP(t[i], '}')) return { value: SKIP, end: skipExpr(t, i), exact: false };
     }
     if (optionalKeys.size) OPTIONAL_OF.set(o, optionalKeys);
-    return { value: o, end: i + 1, exact, optionalKeys, unknownKeys: unknown, partialKeys: partial, spreadUnknown, childOptional, literals };
+    return { value: o, end: i + 1, exact, optionalKeys, unknownKeys: unknown, partialKeys: partial, spreadUnknown, childOptional, literals, kinds };
   }
   // The string literals between tokens a and b (the readable parts of an expression that cannot be read as a whole),
   // joined by " … ", so poisoning checks still see them; null when there are none.
@@ -1534,12 +1539,12 @@
           return toolFromConfig(name, { value: cv, exact: v.exact, unknownKeys: new Set(), partialKeys: new Set() });
         }
         const tool = { name }; const un = [];
-        const d = get(slots[1]); if (typeof d === 'string') tool.description = d; else if (unknown(slots[1])) un.push('description');
+        const d = get(slots[1]); if (typeof d === 'string') tool.description = d; else if (unknown(slots[1])) unk(un, 'description', (v.kinds && v.kinds[slots[1].key]) || 'other');
         const sh = get(slots[2]);
         if (sh && typeof sh === 'object' && !Array.isArray(sh) && isRawShape(sh)) tool.inputSchema = rootSchema(sh, undefined, c.fl);
         else if (sh && typeof sh === 'object' && isSchemaObj(sh) && sh.type === 'object') tool.inputSchema = sh;
         else if (sh === undefined && !unknown(slots[2])) tool.inputSchema = { type: 'object', properties: {} };
-        else { tool.inputSchema = { type: 'object' }; un.push('inputSchema'); }
+        else { tool.inputSchema = { type: 'object' }; unk(un, 'inputSchema', (v.kinds && v.kinds[slots[2].key]) || 'other'); }
         if (c.fl.execution) tool.execution = { taskSupport: 'forbidden' };
         tool._unreadable = un;
         return tool;
@@ -1557,19 +1562,19 @@
       const strAt = (k) => t[k] && (t[k].type === 'str' || t[k].type === 'tpl' || (t[k].type === 'id' && (() => { const r = chainValue(c, idChain(t, k).ids); return r && typeof r.value === 'string'; })()));
       const shapeAt = (k) => isP(t[k], '{') || (t[k] && t[k].type === 'id' && (c.zodNames.has(t[k].value) || (() => { const r = chainValue(c, idChain(t, k).ids); return !!r && !!r.value && typeof r.value === 'object' && !Array.isArray(r.value); })()));
       const fnAt = (k) => t[k] && ((t[k].type === 'id' && /^(async|function)$/.test(t[k].value)) || (isP(t[k], '(') && isP(t[matchClose(t, k) + 1], '=>')) || (t[k].type === 'id' && isP(t[k + 1], '=>')));
-      if (j !== undefined && strAt(j)) { const d = parseValue(t, j, c); if (typeof d.value === 'string') tool.description = d.value; if (d.partial || typeof d.value !== 'string') un.push('description'); j = args[slots[2].p]; }
+      if (j !== undefined && strAt(j)) { const d = parseValue(t, j, c); if (typeof d.value === 'string') tool.description = d.value; if (d.partial || typeof d.value !== 'string') unk(un, 'description', UK.valueKind(t, j, d.end)); j = args[slots[2].p]; }
       else if (j !== undefined && !shapeAt(j)) {
-        un.push('description'); j = args[slots[2].p];
-        if (j === undefined || fnAt(j)) { tool.inputSchema = { type: 'object' }; un.push('inputSchema'); j = null; }
+        unk(un, 'description', UK.valueKind(t, j)); j = args[slots[2].p];
+        if (j === undefined || fnAt(j)) { tool.inputSchema = { type: 'object' }; unk(un, 'inputSchema', j === undefined ? 'other' : 'function'); j = null; }
       }
       if (j === null) { /* unread above */ } else if (j === undefined) tool.inputSchema = { type: 'object', properties: {} };
       else if (isP(t[j], '{') || (t[j] && t[j].type === 'id' && c.zodNames.has(t[j].value))) {
         const shape = zodShapeAt(t, j, c);
-        if (shape.schema && isZodShapeLike(shape.schema)) tool.inputSchema = shape.schema; else { tool.inputSchema = { type: 'object' }; un.push('inputSchema'); }
+        if (shape.schema && isZodShapeLike(shape.schema)) tool.inputSchema = shape.schema; else { tool.inputSchema = { type: 'object' }; unk(un, 'inputSchema', isP(t[j], '{') ? 'nested' : 'member'); }
       } else {
         const v = parseValue(t, j, c);
         if (v.value !== SKIP && v.value && typeof v.value === 'object' && !Array.isArray(v.value)) tool.inputSchema = v.rawShape || (!isSchemaObj(v.value) && !v.zod) ? rootSchema(v.value, v.optionalKeys, c.fl) : v.value;
-        else { tool.inputSchema = { type: 'object' }; un.push('inputSchema'); }
+        else { tool.inputSchema = { type: 'object' }; unk(un, 'inputSchema', UK.valueKind(t, j, v.end)); }
       }
       if (c.fl.execution) tool.execution = { taskSupport: 'forbidden' };
       tool._unreadable = un;
@@ -1602,7 +1607,7 @@
       const out = [];
       keys.forEach(([key, as]) => {
         const v = o.value && o.value !== SKIP ? o.value[key] : undefined;
-        if ((o.unknownKeys && o.unknownKeys.has(key)) || (o.partialKeys && o.partialKeys.has(key)) || (v === undefined && o.spreadUnknown)) { if (!out.includes(as)) out.push(as); }
+        if ((o.unknownKeys && o.unknownKeys.has(key)) || (o.partialKeys && o.partialKeys.has(key)) || (v === undefined && o.spreadUnknown)) unk(out, as, (o.kinds && o.kinds[key]) || (v === undefined && o.spreadUnknown ? 'spread' : 'other'));
       });
       return out;
     };
@@ -1786,7 +1791,7 @@
         if (unrollWrapper(i, tok.start, w, args, ps)) continue;
         const txt = {}; const ds = w.kind === 'tool' ? w.desc : null;
         if (ds && ds.key === undefined && args[ds.p] !== undefined) { try { const d = parseValue(t, args[ds.p], ctx); if (typeof d.value === 'string') txt.description = d.value; } catch (e) { /* no text */ } }
-        unresolved.push(Object.assign({ line: lineOf(tok.start) }, txt));
+        unresolved.push(Object.assign({ line: lineOf(tok.start), kind: w.name && args[w.name.p] !== undefined ? UK.valueKind(t, args[w.name.p]) : 'other' }, txt));
         continue;
       }
       const member = isP(tok, '.') && t[i + 1] && t[i + 1].type === 'id' && isP(t[i + 2], '(');
@@ -1812,7 +1817,7 @@
           const keyTok = !member && isP(t[i - 1], ':') && t[i - 2] && (t[i - 2].type === 'id' || t[i - 2].type === 'str') ? t[i - 2] : null;
           let nm = null;
           if (o.value && o.value !== SKIP && typeof o.value.name === 'string') nm = o.value.name;
-          else { const k2 = findKeyToken(t, objAt, o.end, 'name'); const r = k2 >= 0 ? resolveName(t, k2 + 2, actx, paramsAround(t, blocks, k2)) : null; if (r && r.name) nm = r.name; else if (!keyTok && (o.unknownKeys.has('name') || k2 >= 0)) { unresolved.push(Object.assign({ line: lineOf(at) }, textOf(o))); } }
+          else { const k2 = findKeyToken(t, objAt, o.end, 'name'); const r = k2 >= 0 ? resolveName(t, k2 + 2, actx, paramsAround(t, blocks, k2)) : null; if (r && r.name) nm = r.name; else if (!keyTok && (o.unknownKeys.has('name') || k2 >= 0)) { unresolved.push(Object.assign({ line: lineOf(at), kind: (o.kinds && o.kinds.name) || (k2 >= 0 ? UK.valueKind(t, k2 + 2) : 'other') }, textOf(o))); } }
           if (!nm && keyTok && !(o.value && o.value !== SKIP && o.value.name !== undefined) && !o.unknownKeys.has('name')) nm = String(keyTok.value);
           if (nm && (sdk || hasConfigKey(o) || o.spreadUnknown)) {
             const tool = toolFromObject(o, nm, at, fast ? 'fastmcp' : null);
@@ -1828,7 +1833,7 @@
           if (!nm && sdk && (member || boundTo) && a1 !== undefined && (isP(t[a1], '{') || (t[a1] && /^(str|tpl)$/.test(t[a1].type)))) {
             let txt = {};
             try { if (isP(t[a1], '{')) txt = textOf(configAt(a1)); else { const d = parseValue(t, a1, ctx); txt = { description: typeof d.value === 'string' ? d.value : literalsIn(t, a1, args[2] !== undefined ? args[2] : a1 + 1) }; } } catch (e) { txt = {}; }
-            unresolved.push(Object.assign({ line: lineOf(at) }, txt));
+            unresolved.push(Object.assign({ line: lineOf(at), kind: UK.valueKind(t, a0) }, txt));
           }
           continue;
         }
@@ -1922,6 +1927,7 @@
         if (!isP(t[e], '=')) continue;
         if (!/^(name|toolName|TOOL_NAME|description|title|annotations|inputSchema|schema|parameters|argsShape|paramsSchema|outputSchema)$/.test(key.value)) continue;
         fields[key.value] = parseValue(t, e + 1, ctx); fieldTok[key.value] = e + 1;
+        { const fv = fields[key.value]; if (fv.value === SKIP || fv.partial || fv.exact === false) fv.kind = UK.valueKind(t, e + 1, fv.end); }
         m = Math.max(m, fields[key.value].end - 1);
       }
       const nf = fields.name || fields.toolName || fields.TOOL_NAME;
@@ -1929,7 +1935,7 @@
       if (!['description', 'inputSchema', 'schema', 'parameters', 'argsShape', 'paramsSchema', 'annotations'].some((x) => fields[x]) && !t.slice(open, close).some((x, n) => x.type === 'id' && x.value === 'super' && isP(t[open + n + 1], '('))) continue;
       const tool = { name: nf.value }; const un = [];
       if (fields.title && typeof fields.title.value === 'string') tool.title = fields.title.value;
-      if (fields.description && typeof fields.description.value === 'string') { tool.description = fields.description.value; if (fields.description.partial) un.push('description'); } else un.push('description');
+      if (fields.description && typeof fields.description.value === 'string') { tool.description = fields.description.value; if (fields.description.partial) unk(un, 'description', fields.description.kind); } else unk(un, 'description', fields.description ? fields.description.kind : 'other');
       // the schema: a field, or super({ inputSchema: X }) in the constructor
       let sv = ['inputSchema', 'schema', 'parameters', 'paramsSchema', 'argsShape'].map((x) => fields[x]).find((x) => x && x.value !== SKIP);
       if (!sv) {
@@ -1943,8 +1949,8 @@
         }
       }
       if (sv && sv.value && typeof sv.value === 'object' && !Array.isArray(sv.value)) tool.inputSchema = sv.rawShape || (!isSchemaObj(sv.value) && !sv.zod) ? rootSchema(sv.value, sv.optionalKeys, ctx.fl) : sv.value;
-      else { tool.inputSchema = { type: 'object' }; un.push('inputSchema'); }
-      if (fields.annotations && fields.annotations.value && fields.annotations.value !== SKIP && typeof fields.annotations.value === 'object') tool.annotations = fields.annotations.value; else un.push('annotations');
+      else { tool.inputSchema = { type: 'object' }; const sf = ['inputSchema', 'schema', 'parameters', 'paramsSchema', 'argsShape'].map((x) => fields[x]).find(Boolean); unk(un, 'inputSchema', (sf && sf.kind) || 'other'); }
+      if (fields.annotations && fields.annotations.value && fields.annotations.value !== SKIP && typeof fields.annotations.value === 'object') tool.annotations = fields.annotations.value; else unk(un, 'annotations', fields.annotations ? fields.annotations.kind : 'other');
       if (fields.outputSchema && fields.outputSchema.value && fields.outputSchema.value !== SKIP && typeof fields.outputSchema.value === 'object') tool.outputSchema = fields.outputSchema.value;
       if (ctx.fl.execution) tool.execution = { taskSupport: 'forbidden' };
       tool._unreadable = un;
@@ -2580,7 +2586,7 @@
       const tool = { name }; const un = [];
       if (typeof given.title === 'string') tool.title = given.title;
       const ds = fmcp && doc ? pyDocSections(doc) : null;
-      if (given.description !== undefined) { if (typeof given.description === 'string') tool.description = given.description; else if (given.descriptionLiterals) tool.description = given.descriptionLiterals.slice(0, MAX_STR); if (given.descriptionPartial || given.description === null) un.push('description'); }
+      if (given.description !== undefined) { if (typeof given.description === 'string') tool.description = given.description; else if (given.descriptionLiterals) tool.description = given.descriptionLiterals.slice(0, MAX_STR); if (given.descriptionPartial || given.description === null) unk(un, 'description', given.descriptionKind); }
       else if (doc) tool.description = ds ? ds.description : doc;
       if (ds) Object.keys(props).forEach((pn) => { if (props[pn].description === undefined && ds.params[pn]) props[pn].description = ds.params[pn]; });
       tool.inputSchema = fmcp ? { properties: props, required: required.length ? required : undefined, type: 'object', additionalProperties: false } : { properties: props, required: required.length ? required : undefined, title: fname + 'Arguments', type: 'object' };
@@ -2594,19 +2600,35 @@
         } else if (rt.exact && !(rt.schema.type === 'object')) tool.outputSchema = { properties: { result: Object.assign({}, rt.schema, { title: 'Result' }) }, required: ['result'], title: fname + 'Output', type: 'object' };
         else if (!rt.exact) exact = false;
       }
-      if (given.annotations !== undefined) { if (given.annotations) tool.annotations = given.annotations; if (!given.annotations || given.annotationsPartial) { exact = false; un.push('annotations'); } }
-      else if (given.annotationsUnknown) un.push('annotations');
+      if (given.annotations !== undefined) { if (given.annotations) tool.annotations = given.annotations; if (!given.annotations || given.annotationsPartial) { exact = false; unk(un, 'annotations', given.annotationsKind); } }
+      else if (given.annotationsUnknown) unk(un, 'annotations', 'other');
       if (fmcp && given.fastmcpTags !== false) { if (given.fastmcpTags === undefined) tool._meta = { fastmcp: { tags: [] } }; else exact = false; }
       tool._unreadable = un;
       return { tool, exactTypes: exact, fname };
     };
     // what a decorator or call gave: name=, description=, title=, annotations=, structured_output=, tags=
+    // The kind of a keyword argument's value (R-RD-45): a call of the SDK's own ToolAnnotations / dict is looked into,
+    // and the first argument that is not a literal decides; anything else is the expression's own kind.
+    const isId0 = (x) => !!x && x.type === 'id';
+    let srcTok = null; // the file's tokens, read once and only when a kind needs its imports
+    const srcTokens = () => { if (!srcTok) { try { srcTok = pyTokenize(clean); } catch (e) { srcTok = []; } } return srcTok; };
+    const pyTextKind = (text) => {
+      let tt; try { tt = pyTokenize(String(text || '')); } catch (e) { return 'other'; }
+      if (isId0(tt[0]) && /^(ToolAnnotations|dict)$/.test(tt[0].value) && isP(tt[1], '(')) {
+        for (let k = 2; k < tt.length; k++) {
+          if (isId0(tt[k]) && isP(tt[k + 1], '=')) { const v = tt[k + 2]; if (v && !(v.type === 'num' || v.type === 'str' || (v.type === 'id' && /^(True|False|None)$/.test(v.value)))) return UK.valueKind(tt, k + 2, undefined, { tokens: srcTokens() }); }
+          if (isP(tt[k], '**')) return 'spread';
+        }
+        return 'nested';
+      }
+      return UK.valueKind(tt, 0, tt.length, { tokens: srcTokens() });
+    };
     const givenOf = (kw) => {
       const g = {};
-      if (kw.name !== undefined) { const n = nameOf(kw.name); g.name = n; if (!n) g.nameUnknown = true; }
+      if (kw.name !== undefined) { const n = nameOf(kw.name); g.name = n; if (!n) { g.nameUnknown = true; g.nameKind = pyTextKind(kw.name); } }
       if (kw.title !== undefined) { const v = exprVal(kw.title); if (v && typeof v.value === 'string') g.title = v.value; }
-      if (kw.description !== undefined) { const v = exprVal(kw.description); if (v && typeof v.value === 'string') { g.description = v.value; if (v.partial) g.descriptionPartial = true; } else { g.description = null; g.descriptionLiterals = pyLiterals(kw.description); lose(g.descriptionLiterals); } }
-      if (kw.annotations !== undefined) { const a = pyAnnotationsValue(kw.annotations); g.annotations = a && a.value; if (a && a.partial) g.annotationsPartial = true; }
+      if (kw.description !== undefined) { const v = exprVal(kw.description); if (v && typeof v.value === 'string') { g.description = v.value; if (v.partial) { g.descriptionPartial = true; g.descriptionKind = pyTextKind(kw.description); } } else { g.description = null; g.descriptionKind = pyTextKind(kw.description); g.descriptionLiterals = pyLiterals(kw.description); lose(g.descriptionLiterals); } }
+      if (kw.annotations !== undefined) { const a = pyAnnotationsValue(kw.annotations); g.annotations = a && a.value; if (a && a.partial) g.annotationsPartial = true; if (!a || !a.value || a.partial) g.annotationsKind = pyTextKind(kw.annotations); }
       else if (['read_only_hint', 'destructive_hint', 'idempotent_hint', 'open_world_hint'].some((k) => kw[k] !== undefined)) g.annotationsUnknown = true;
       if (kw.structured_output !== undefined && /^False$/.test(kw.structured_output.trim())) g.structured = false;
       if (kw.tags !== undefined) g.fastmcpTags = null;
@@ -2617,7 +2639,7 @@
     // snake_case hint has no knowable wire key: it is left out and the tool's annotations are marked not readable.
     // Without a major from the repository's manifests, the file's own SDK imports decide when they can (pySdkImports).
     const pyMajor = opts.sdk && Number.isInteger(opts.sdk.pyMajor) ? opts.sdk.pyMajor : pySdkImports(src);
-    const unresolvedText = (line, g) => { const o = { line }; const d = typeof g.description === 'string' ? g.description : g.descriptionLiterals; if (d) o.description = d; if (typeof g.title === 'string') o.title = g.title; return o; };
+    const unresolvedText = (line, g) => { const o = { line }; const d = typeof g.description === 'string' ? g.description : g.descriptionLiterals; if (d) o.description = d; if (typeof g.title === 'string') o.title = g.title; if (g.nameKind) o.kind = g.nameKind; return o; };
     const PY_HINT_SNAKE = /^(read_only|destructive|idempotent|open_world)_hint$/;
     const PY_ANNOTATION_KEYS = ['title', 'readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint'];
     const pyAnnotationsValue = (text) => {
@@ -4547,7 +4569,7 @@
       if (out.over.length) hints.incomplete = { candidates: out.over.length, files: Array.from(new Set(found.filter((x) => out.over.includes(x.tool.name)).map((x) => x.path))).concat(out.over.filter((n) => /^\(unnamed/.test(n))), why: 'text' };
       const langs2 = Array.from(new Set(found.map((x) => x.language || null)));
       const language = langs2.length === 1 && langs2[0] ? langs2[0] : null;
-      candidates.push({ kind: 'source', fidelity: allLiteral && !Object.keys(out.unreadable).length && !language ? 'literal' : 'derived', language, path: null, built, files: Array.from(new Set(found.map((x) => x.path))), tools: out.tools, unreadable: out.unreadable, unresolved: unres, unresolvedNames: unres.length, where: found.map((x) => ({ name: x.tool.name, path: x.path, line: x.line, fidelity: x.fidelity })), excluded: an.excluded.filter((x) => found.some((f) => servers.rootOf(f.groupPath || f.path) === servers.rootOf(x.groupPath || x.path))).map((x) => ({ name: x.tool.name, path: x.path, line: x.line, reasons: x.marks.filter((m) => m.exclude).map((m) => m.reason + (m.detail ? ' (' + m.detail + ')' : '')) })).concat(setAside), marked, sdk: an.sdk });
+      candidates.push({ kind: 'source', fidelity: allLiteral && !Object.keys(out.unreadable).length && !language ? 'literal' : 'derived', language, path: null, built, files: Array.from(new Set(found.map((x) => x.path))), tools: out.tools, unreadable: out.unreadable, unreadableKinds: out.unreadableKinds, unresolved: unres, unresolvedNames: unres.length, unresolvedKinds: UK.countKinds(unres.map((x) => x.kind || 'other')), where: found.map((x) => ({ name: x.tool.name, path: x.path, line: x.line, fidelity: x.fidelity })), excluded: an.excluded.filter((x) => found.some((f) => servers.rootOf(f.groupPath || f.path) === servers.rootOf(x.groupPath || x.path))).map((x) => ({ name: x.tool.name, path: x.path, line: x.line, reasons: x.marks.filter((m) => m.exclude).map((m) => m.reason + (m.detail ? ' (' + m.detail + ')' : '')) })).concat(setAside), marked, sdk: an.sdk });
       // opt-in (o.effects): what each tool's handler touches, read from the same files (repo-effects.cjs); never changes the list or its grades
       if (o.effects && RepoEffects) { try { candidates[candidates.length - 1].effects = RepoEffects.analyse(readFiles, found, { depth: o.effectsDepth }); } catch (e) { candidates[candidates.length - 1].effects = { version: 0, tools: {}, summary: { error: 'reader_error' } }; } }
       // several Go main packages (or Rust modules) construct a server and none of them holds tools: they share the
@@ -4643,7 +4665,7 @@
   // Text the reader could not place in a tool (see LOST) is listed per tool in unreadable.text, for the poisoning checks;
   // a tool whose text runs over MAX_LOST is named in `over`, and the scan refuses the list.
   function publicTools(tools) {
-    const unreadable = {}; const over = [];
+    const unreadable = {}; const over = []; const kinds = {};
     const out = tools.map((t) => {
       if (t._lost) {
         const lt = lostText(t._lost);
@@ -4654,11 +4676,13 @@
       if (t._deprecated) { t = Object.assign({}, t); delete t._deprecated; }
       if (!u || !u.length) { if (t._unreadable) { t = Object.assign({}, t); delete t._unreadable; } return t; }
       const c = Object.assign({}, t); delete c._unreadable;
-      u.forEach((part) => { (unreadable[part] = unreadable[part] || []).push(t.name); });
+      u.forEach((part) => { (unreadable[part] = unreadable[part] || []).push(t.name); (kinds[part] = kinds[part] || []).push((u.kinds && u.kinds[part]) || 'other'); });
       if (u.includes('inputSchema')) c.inputSchema = { type: 'object', [UNKNOWN_MARK]: true };
       return c;
     });
-    return { tools: out, unreadable, over };
+    // R-RD-45: per part, how many of its unreadable tools came from each kind of construct (our words and counts only)
+    const unreadableKinds = {}; Object.keys(kinds).forEach((part) => { unreadableKinds[part] = UK.countKinds(kinds[part]); });
+    return { tools: out, unreadable, over, unreadableKinds };
   }
 
   // ------------------------------------------------------------ one server or several
