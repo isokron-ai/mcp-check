@@ -140,6 +140,9 @@ jobs:
           # The fuzz stage (corpus/FUZZ.md). The lane runs it only when the repository variable LANE_LIVE_PROBE_FUZZ is `on`;
           # the self test always does, on our own servers.
           LIVE_PROBE_FUZZ: 'on'
+          # Read-only token for api.github.com's rate limit when the resolver reads a Go repository's tree (corpus/go-entry.mjs);
+          # sent to api.github.com only, never to a container.
+          GH_TOKEN: ${{ github.token }}
         run: node corpus/live-probe.mjs plan "$RUNNER_TEMP/live-probe" --msc surface-corpus --seed tool-qa/history/seed-v1.json
       # Every subject runs in the sandbox's containers, never in this shell. The step ends only after the sandbox is
       # gone: no container or volume at all, no process of uid 65534, no runsc process.

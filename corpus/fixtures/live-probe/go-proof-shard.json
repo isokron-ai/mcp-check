@@ -1,0 +1,15 @@
+{
+  "about": "The fixture shard of .github/workflows/live-probe-go-proof.yml (R-LP-91): two Go repositories with no registry package, built in the sandbox at their commit with `go install`. The workflow sends subject, run_key and fence as the items input. Neither server can list tools with no arguments (mark3labs/mcp-filesystem-server needs an allowed directory, isaacphi/mcp-language-server a workspace and a language server binary), so the proof is the build, its egress and the start, not a grade; what each ends with is printed, never required to be a grade.",
+  "items": [
+    {
+      "subject": "mark3labs/mcp-filesystem-server",
+      "run_key": "5555555555555555555555555555555555555555555555555555555555555555",
+      "fence": 1
+    },
+    {
+      "subject": "isaacphi/mcp-language-server",
+      "run_key": "6666666666666666666666666666666666666666666666666666666666666666",
+      "fence": 2
+    }
+  ]
+}

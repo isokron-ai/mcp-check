@@ -50,6 +50,7 @@ function fakeFetch(servers, { status = 200, oci = {}, realm = 'https://ghcr.io/t
       if (!init.headers.authorization) return res(401, '', { 'www-authenticate': 'Bearer realm="' + realm + '",service="' + u.hostname + '"' });
       return o(u, init);
     }
+    if (u.hostname === 'api.github.com') return res(404, {}); // R-LP-91: a repository GitHub does not know is not a Go repository
     throw new Error('unexpected fetch ' + url);
   };
   f.calls = calls;
