@@ -21,7 +21,7 @@ const FX = join(root, 'test', 'fixtures', 'live-probe');
 const fx = (f) => readFileSync(join(FX, f), 'utf8');
 const MARKER = 'liveprobe-MARKERMARKERMARKER0000';
 /** The mcp-surface-corpus commit both workflows pin (SURFACE_CORPUS_REF, the conformance call and sandbox-guard). */
-const SANDBOX_PIN = '78a7834cf028507b03e90e266b87bebeacfccd51';
+const SANDBOX_PIN = '3738f2c3dabe03e943a1e5ff0a2441aca831e910';
 const NODE24 = 'docker.io/library/node:24-bookworm-slim@sha256:dc26ae92c9fb15cf6b1d63e20f0944b2efe0f115b20e00be48fb23fceb061c54';
 const items = (n, f = (i) => 'owner' + i + '/repo' + i) => JSON.stringify(Array.from({ length: n }, (_, i) => ({ subject: f(i), run_key: String(i + 1).repeat(64).slice(0, 64).replace(/[^0-9a-f]/g, 'a'), fence: i + 1 })));
 
@@ -433,7 +433,7 @@ test('R-LP-22: the self test judges the bundles with the ingest tool-qa runs, wh
 });
 
 test('R-LP-23: the sandbox pin includes the install-network hostile cases and the proxy positive control (mcp-surface-corpus #9, #10)', () => {
-  assert.equal(SANDBOX_PIN, '78a7834cf028507b03e90e266b87bebeacfccd51');
+  assert.equal(SANDBOX_PIN, '3738f2c3dabe03e943a1e5ff0a2441aca831e910');
   for (const f of ['live-probe.yml', 'live-probe-selftest.yml']) {
     const y = wf(f);
     assert.equal(/\n  SURFACE_CORPUS_REF: '([0-9a-f]{40})'\n/.exec(y)[1], SANDBOX_PIN, f);
