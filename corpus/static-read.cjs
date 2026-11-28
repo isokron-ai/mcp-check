@@ -20,7 +20,7 @@ const path = require('node:path');
 
 const FORMAT = 'isokron-live-probe-static/1';
 // The reader's modules: repo-source.cjs and every module it requires (test: R-LP-78 keeps this list whole).
-const READER_FILES = ['repo-source.cjs', 'repo-go.cjs', 'repo-rust.cjs', 'repo-csharp.cjs', 'repo-effects.cjs'];
+const READER_FILES = ['repo-source.cjs', 'repo-go.cjs', 'repo-rust.cjs', 'repo-csharp.cjs', 'repo-effects.cjs', 'unreadable-kind.cjs'];
 const SELF = 'static-read.cjs';
 const LIST_FILE_MAX = 1500000; // GitHub lists a blob of this size or more, and the reader does not read it
 const TREE_MAX = 100000;

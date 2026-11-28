@@ -121,7 +121,7 @@ gets its bundle, with the skip recorded. A bundle holds:
 | Path | What it holds |
 |---|---|
 | `results/scan-static.json` | Format `isokron-mcp-check-scan-static/1`: status (`graded` or `skipped`), the detail code of a skip and whether it is retryable, engine, rubric and spec versions, the commit, section grades, check counts and findings. Tools are named by position only. For a repository of several servers (`multiple_servers`), `servers` grades each one (see below); otherwise it is `null`. |
-| `observations/static.ndjson` | Field records `commit_sha`, `commit_date` and `registration_provenance` (how the list was read: fidelity, language, counts of tools left out or unreadable). A field that could not be read is `null` with a reason. |
+| `observations/static.ndjson` | Field records `commit_sha`, `commit_date` and `registration_provenance` (how the list was read: fidelity, language, counts of tools left out or unreadable, and `unreadable_kinds`: per unreadable part and for unresolved names, how many came from each kind of construct, in fixed words only, R-RD-45). A field that could not be read is `null` with a reason. |
 | `controls/` | The outputs of the two controls below. |
 | `logs/scan.log` | What was done, as codes and counts. |
 | `raw/` | The subject's own text (tool list, file paths, findings with tool names), kept apart from everything above. Each file is compact JSON of at most 4 MiB: a list that does not fit keeps the entries that do (`{"truncated": true, "total", "kept", "items"}`), and `results/scan-static.json` lists every cut file in `raw_truncated`. |
